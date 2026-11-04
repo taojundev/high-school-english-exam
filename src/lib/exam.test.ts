@@ -1,0 +1,126 @@
+import { describe, expect, it } from 'vitest';
+import { BANK } from '../data';
+import { generatePaper, groupQuestions, paperSourceIds } from './exam';
+import type { Paper } from '../types';
+
+const sectionPoints = (paper: Paper) =>
+  Object.fromEntries(paper.sections.map((s) => [s.id, s.points]));
+
+describe('generatePaper', () => {
+  it('builds a 150-point full paper with the expected structure', () => {
+    const paper = generatePaper({ mode: 'full', seed: 20240601 });
+    expect(paper.questions).toHaveLength(78);
+    expect(paper.maxScore).toBe(150);
+    expect(paper.durationMin).toBe(120);
+    expect(sectionPoints(paper)).toEqual({
+      listening: 25,
+      grammar: 10,
+      vocabulary: 10,
+      cloze: 15,
+      reading: 40,
+      translation: 15,
+      summary: 10,
+      writing: 25,
+    });
+    expect(paper.sections).toHaveLength(8);
+  });
+
+  it('is deterministic for the same seed', () => {
+    const a = generatePaper({ mode: 'full', seed: 42 });
+    const b = generatePaper({ mode: 'full', seed: 42 });
+    expect(paperSourceIds(a)).toEqual(paperSourceIds(b));
+    expect(a.questions.map((q) => q.options)).toEqual(b.questions.map((q) => q.options));
+    expect(a.questions.map((q) => q.answer)).toEqual(b.questions.map((q) => q.answer));
+  });
+
+  it('produces unique question keys and valid answers', () => {
+    const paper = generatePaper({ mode: 'full', seed: 7 });
+    expect(new Set(paper.questions.map((q) => q.id)).size).toBe(paper.questions.length);
+    expect(new Set(paper.questions.map((q) => q.number)).size).toBe(paper.questions.length);
+    for (const q of paper.questions) {
+      if (q.type === 'mcq') {
+        expect(q.options).toBeDefined();
+        expect(q.answer).toBeGreaterThanOrEqual(0);
+        expect(q.answer).toBeLessThan(q.options!.length);
+        expect(q.options![q.answer!]).toBe(q.answerText);
+      }
+      if (q.type === 'fill' || q.type === 'vocab') {
+        expect(Boolean(q.answerText)).toBe(true);
+      }
+    }
+  });
+
+  it('builds 11 unique words for each vocabulary bank', () => {
+    const paper = generatePaper({ mode: 'full', seed: 99 });
+    const banks = Object.values(paper.wordBanks);
+    expect(banks).toHaveLength(1);
+    expect(banks[0]).toHaveLength(11);
+    expect(new Set(banks[0].map((w) => w.toLowerCase())).size).toBe(11);
+    const vocab = paper.questions.filter((q) => q.type === 'vocab');
+    expect(vocab).toHaveLength(10);
+    for (const q of vocab) expect(banks[0]).toContain(q.answerText);
+  });
+
+  it('supports section practice with the right size', () => {
+    const expected = {
+      listening: 15,
+      grammar: 10,
+      vocabulary: 10,
+      cloze: 15,
+      reading: 20,
+      translation: 15,
+      summary: 10,
+      writing: 25,
+    } as const;
+    for (const [section, points] of Object.entries(expected)) {
+      const paper = generatePaper({
+        mode: 'section',
+        section: section as keyof typeof expected,
+        seed: 123,
+      });
+      expect(paper.sections).toHaveLength(1);
+      expect(paper.sections[0].id).toBe(section);
+      expect(paper.maxScore).toBe(points);
+      expect(paper.durationMin).toBeGreaterThan(0);
+    }
+  });
+
+  it('honours the basic difficulty preference', () => {
+    const paper = generatePaper({ mode: 'full', seed: 11, difficulty: 'basic' });
+    expect(Math.max(...paper.questions.map((q) => q.difficulty))).toBeLessThanOrEqual(2);
+  });
+
+  it('honours the advanced difficulty preference', () => {
+    const paper = generatePaper({ mode: 'full', seed: 11, difficulty: 'advanced' });
+    expect(paper.questions.filter((q) => q.difficulty === 3).length).toBeGreaterThan(3);
+    const avg = paper.questions.reduce((n, q) => n + q.difficulty, 0) / paper.questions.length;
+    expect(avg).toBeGreaterThan(1.9);
+  });
+
+  it('avoids recently seen source ids when possible', () => {
+    const first = generatePaper({ mode: 'section', section: 'reading', seed: 5 });
+    const seen = first.questions.map((q) => q.sourceId);
+    const second = generatePaper({ mode: 'section', section: 'reading', seed: 6, seenIds: seen });
+    const overlap = second.questions.filter((q) => seen.includes(q.sourceId));
+    expect(overlap.length).toBe(0);
+  });
+
+  it('groups questions by context', () => {
+    const paper = generatePaper({ mode: 'full', seed: 3 });
+    const reading = paper.questions.filter((q) => q.section === 'reading');
+    const groups = groupQuestions(reading);
+    expect(groups).toHaveLength(4);
+    for (const group of groups) {
+      expect(group).toHaveLength(5);
+      expect(new Set(group.map((q) => q.groupId)).size).toBe(1);
+    }
+  });
+
+  it('has a bank large enough for varied papers', () => {
+    expect(BANK.listeningShort.length).toBeGreaterThanOrEqual(20);
+    expect(BANK.reading.length).toBeGreaterThanOrEqual(10);
+    expect(BANK.cloze.length).toBeGreaterThanOrEqual(5);
+    expect(BANK.translation.length).toBeGreaterThanOrEqual(30);
+    expect(BANK.writing.length).toBeGreaterThanOrEqual(12);
+  });
+});

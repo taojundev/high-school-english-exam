@@ -1,0 +1,478 @@
+import { BANK } from '../data';
+import { SECTION_MAP, SECTION_META } from '../sections';
+import type {
+  Difficulty,
+  ExamMode,
+  ExamQuestion,
+  GenerateOptions,
+  Paper,
+  PaperSection,
+  QuestionContext,
+  SectionId,
+} from '../types';
+import { mulberry32, randomSeed, sample, shuffle } from './random';
+
+const shortPoint = 1;
+const fullLongPoint = 2.5;
+const practiceLongPoint = 3;
+
+type HasId = { id: string; difficulty: Difficulty };
+
+function idsOfGroup(group: { id: string; questions: { id: string }[] }): string[] {
+  return [group.id, ...group.questions.map((q) => q.id)];
+}
+
+function pickItems<T extends HasId>(
+  items: readonly T[],
+  count: number,
+  rng: () => number,
+  difficulty: GenerateOptions['difficulty'],
+  seen: Set<string>,
+  idsOf: (item: T) => string[] = (item) => [item.id],
+): T[] {
+  let pool = items.filter((item) => idsOf(item).every((id) => !seen.has(id)));
+  if (pool.length < count) pool = items.slice();
+
+  if (difficulty && difficulty !== 'mixed') {
+    const target = difficulty === 'basic' ? 1 : 3;
+    const preferred = pool.filter((item) => item.difficulty === target);
+    const rest = pool
+      .filter((item) => item.difficulty !== target)
+      .sort((a, b) => Math.abs(a.difficulty - target) - Math.abs(b.difficulty - target));
+    if (preferred.length >= count) return sample(preferred, count, rng);
+    return [
+      ...sample(preferred, preferred.length, rng),
+      ...sample(rest, Math.max(0, count - preferred.length), rng),
+    ].slice(0, count);
+  }
+  return sample(pool, count, rng);
+}
+
+function shuffleMcq(
+  options: readonly string[],
+  answer: number,
+  rng: () => number,
+): { options: string[]; answer: number } {
+  const shuffled = shuffle(
+    options.map((text, index) => ({ text, correct: index === answer })),
+    rng,
+  );
+  return {
+    options: shuffled.map((o) => o.text),
+    answer: shuffled.findIndex((o) => o.correct),
+  };
+}
+
+export function generatePaper(options: GenerateOptions): Paper {
+  const bank = options.bank ?? BANK;
+  const seed = options.seed ?? randomSeed();
+  const rng = mulberry32(seed);
+  const mode: ExamMode = options.mode;
+  const seen = new Set<string>(options.seenIds ?? []);
+  const paperId = `paper-${seed.toString(36)}-${Math.floor(rng() * 1e6).toString(36)}`;
+  const questions: ExamQuestion[] = [];
+  const contexts: Record<string, QuestionContext> = {};
+  const wordBanks: Record<string, string[]> = {};
+  const sections: PaperSection[] = [];
+  const wanted = (id: SectionId) => mode === 'full' || options.section === id;
+
+  const push = (q: Omit<ExamQuestion, 'id' | 'number'>): string => {
+    const number = questions.length + 1;
+    const id = `q${number}`;
+    questions.push({ ...q, id, number });
+    return id;
+  };
+
+  if (wanted('listening')) {
+    const ids: string[] = [];
+    const shortCount = mode === 'full' ? 10 : 6;
+    const longs = pickItems(
+      bank.listeningLong,
+      mode === 'full' ? 2 : 1,
+      rng,
+      options.difficulty,
+      seen,
+      idsOfGroup,
+    );
+    const usedShort = new Set(longs.flatMap((g) => g.questions.map((q) => q.question)));
+    const shorts = pickItems(
+      bank.listeningShort.filter((s) => !usedShort.has(s.question)),
+      shortCount,
+      rng,
+      options.difficulty,
+      seen,
+    );
+    shorts.forEach((item, index) => {
+      const groupId = `ls-${item.id}`;
+      contexts[groupId] = {
+        kind: 'dialogue',
+        title: `短对话 ${index + 1}`,
+        audioLabel: `短对话 ${index + 1}`,
+        audioScript: item.script,
+      };
+      const mcq = shuffleMcq(item.options, item.answer, rng);
+      ids.push(
+        push({
+          sourceId: item.id,
+          section: 'listening',
+          type: 'mcq',
+          points: shortPoint,
+          difficulty: item.difficulty,
+          tags: item.tags,
+          groupId,
+          stem: item.question,
+          options: mcq.options,
+          answer: mcq.answer,
+          answerText: mcq.options[mcq.answer],
+          explanation: item.explanation,
+        }),
+      );
+    });
+    longs.forEach((item) => {
+      const groupId = `ll-${item.id}`;
+      contexts[groupId] = {
+        kind: 'monologue',
+        title: item.title,
+        audioLabel: item.title,
+        audioScript: item.script,
+      };
+      item.questions.forEach((sub) => {
+        const mcq = shuffleMcq(sub.options, sub.answer, rng);
+        ids.push(
+          push({
+            sourceId: sub.id,
+            section: 'listening',
+            type: 'mcq',
+            points: mode === 'full' ? fullLongPoint : practiceLongPoint,
+            difficulty: sub.difficulty,
+            tags: sub.tags,
+            groupId,
+            stem: sub.question,
+            options: mcq.options,
+            answer: mcq.answer,
+            answerText: mcq.options[mcq.answer],
+            explanation: sub.explanation,
+          }),
+        );
+      });
+    });
+    sections.push({
+      id: 'listening',
+      name: SECTION_MAP.listening.name,
+      en: SECTION_MAP.listening.en,
+      points: ids.reduce((n, id) => n + (questions.find((q) => q.id === id)?.points ?? 0), 0),
+      minutes: mode === 'full' ? SECTION_MAP.listening.minutes : SECTION_MAP.listening.practiceMinutes,
+      instructions: SECTION_MAP.listening.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('grammar')) {
+    const ids: string[] = [];
+    const mcqItems = pickItems(bank.grammarMcq, mode === 'full' ? 6 : 6, rng, options.difficulty, seen);
+    const fillItems = pickItems(bank.grammarFill, mode === 'full' ? 4 : 4, rng, options.difficulty, seen);
+    [...mcqItems, ...fillItems].forEach((item) => {
+      const groupId = `g-${item.id}`;
+      const isMcq = 'options' in item;
+      const mcq = isMcq ? shuffleMcq(item.options, item.answer, rng) : undefined;
+      ids.push(
+        push({
+          sourceId: item.id,
+          section: 'grammar',
+          type: isMcq ? 'mcq' : 'fill',
+          points: 1,
+          difficulty: item.difficulty,
+          tags: item.tags,
+          groupId,
+          stem: item.stem,
+          options: mcq?.options,
+          answer: mcq?.answer,
+          answerText: isMcq ? mcq!.options[mcq!.answer] : item.answer,
+          accept: isMcq ? undefined : item.accept,
+          explanation: item.explanation,
+        }),
+      );
+    });
+    sections.push({
+      id: 'grammar',
+      name: SECTION_MAP.grammar.name,
+      en: SECTION_MAP.grammar.en,
+      points: ids.length,
+      minutes: mode === 'full' ? SECTION_MAP.grammar.minutes : SECTION_MAP.grammar.practiceMinutes,
+      instructions: SECTION_MAP.grammar.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('vocabulary')) {
+    const ids: string[] = [];
+    const items = pickItems(bank.vocabulary, 10, rng, options.difficulty, seen);
+    const groupId = `vocab-bank-${paperId}`;
+    const answers = new Set(items.map((i) => i.answer));
+    let extra = bank.vocabulary.find((v) => !answers.has(v.answer))?.answer;
+    if (!extra) {
+      extra = bank.vocabulary.flatMap((v) => v.distractors).find((w) => !answers.has(w));
+    }
+    const bankWords = [...answers];
+    if (extra && !answers.has(extra)) bankWords.push(extra);
+    wordBanks[groupId] = shuffle(bankWords, rng);
+    items.forEach((item) => {
+      ids.push(
+        push({
+          sourceId: item.id,
+          section: 'vocabulary',
+          type: 'vocab',
+          points: 1,
+          difficulty: item.difficulty,
+          tags: item.tags,
+          groupId,
+          stem: item.sentence,
+          answerText: item.answer,
+          explanation: item.explanation,
+        }),
+      );
+    });
+    sections.push({
+      id: 'vocabulary',
+      name: SECTION_MAP.vocabulary.name,
+      en: SECTION_MAP.vocabulary.en,
+      points: ids.length,
+      minutes: mode === 'full' ? SECTION_MAP.vocabulary.minutes : SECTION_MAP.vocabulary.practiceMinutes,
+      instructions: SECTION_MAP.vocabulary.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('cloze')) {
+    const ids: string[] = [];
+    const [item] = pickItems(bank.cloze, 1, rng, options.difficulty, seen);
+    const groupId = `cloze-${item.id}`;
+    contexts[groupId] = { kind: 'passage', title: item.title, text: item.text };
+    item.blanks.forEach((blank, index) => {
+      const mcq = shuffleMcq(blank.options, blank.answer, rng);
+      ids.push(
+        push({
+          sourceId: item.id,
+          section: 'cloze',
+          type: 'mcq',
+          points: 1,
+          difficulty: item.difficulty,
+          tags: blank.tags,
+          groupId,
+          stem: `第 ${index + 1} 空`,
+          options: mcq.options,
+          answer: mcq.answer,
+          answerText: mcq.options[mcq.answer],
+          explanation: blank.explanation,
+        }),
+      );
+    });
+    sections.push({
+      id: 'cloze',
+      name: SECTION_MAP.cloze.name,
+      en: SECTION_MAP.cloze.en,
+      points: ids.length,
+      minutes: mode === 'full' ? SECTION_MAP.cloze.minutes : SECTION_MAP.cloze.practiceMinutes,
+      instructions: SECTION_MAP.cloze.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('reading')) {
+    const ids: string[] = [];
+    const groups = pickItems(
+      bank.reading,
+      mode === 'full' ? 4 : 2,
+      rng,
+      options.difficulty,
+      seen,
+      idsOfGroup,
+    );
+    groups.forEach((item) => {
+      const groupId = `reading-${item.id}`;
+      contexts[groupId] = { kind: 'passage', title: item.title, text: item.text };
+      item.questions.forEach((sub) => {
+        const mcq = shuffleMcq(sub.options, sub.answer, rng);
+        ids.push(
+          push({
+            sourceId: sub.id,
+            section: 'reading',
+            type: 'mcq',
+            points: 2,
+            difficulty: sub.difficulty,
+            tags: sub.tags,
+            groupId,
+            stem: sub.question,
+            options: mcq.options,
+            answer: mcq.answer,
+            answerText: mcq.options[mcq.answer],
+            explanation: sub.explanation,
+          }),
+        );
+      });
+    });
+    sections.push({
+      id: 'reading',
+      name: SECTION_MAP.reading.name,
+      en: SECTION_MAP.reading.en,
+      points: ids.length * 2,
+      minutes: mode === 'full' ? SECTION_MAP.reading.minutes : SECTION_MAP.reading.practiceMinutes,
+      instructions: SECTION_MAP.reading.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('translation')) {
+    const ids: string[] = [];
+    const items = pickItems(bank.translation, 5, rng, options.difficulty, seen);
+    items.forEach((item) => {
+      ids.push(
+        push({
+          sourceId: item.id,
+          section: 'translation',
+          type: 'translation',
+          points: 3,
+          difficulty: item.difficulty,
+          tags: item.tags,
+          groupId: `tr-${item.id}`,
+          stem: item.chinese,
+          reference: item.reference,
+          keyPoints: item.keyPoints,
+          tips: item.tips,
+        }),
+      );
+    });
+    sections.push({
+      id: 'translation',
+      name: SECTION_MAP.translation.name,
+      en: SECTION_MAP.translation.en,
+      points: ids.length * 3,
+      minutes:
+        mode === 'full' ? SECTION_MAP.translation.minutes : SECTION_MAP.translation.practiceMinutes,
+      instructions: SECTION_MAP.translation.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('summary')) {
+    const ids: string[] = [];
+    const [item] = pickItems(bank.summary, 1, rng, options.difficulty, seen);
+    const groupId = `summary-${item.id}`;
+    contexts[groupId] = { kind: 'passage', title: item.title, text: item.text };
+    ids.push(
+      push({
+        sourceId: item.id,
+        section: 'summary',
+        type: 'summary',
+        points: 10,
+        difficulty: item.difficulty,
+        tags: ['概要写作'],
+        groupId,
+        stem: item.prompt,
+        reference: item.sample,
+        sample: item.sample,
+        keyPoints: item.keyPoints,
+        minWords: item.minWords,
+        maxWords: item.maxWords,
+        tips: item.tips,
+      }),
+    );
+    sections.push({
+      id: 'summary',
+      name: SECTION_MAP.summary.name,
+      en: SECTION_MAP.summary.en,
+      points: 10,
+      minutes: mode === 'full' ? SECTION_MAP.summary.minutes : SECTION_MAP.summary.practiceMinutes,
+      instructions: SECTION_MAP.summary.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (wanted('writing')) {
+    const ids: string[] = [];
+    const [item] = pickItems(bank.writing, 1, rng, options.difficulty, seen);
+    const groupId = `writing-${item.id}`;
+    ids.push(
+      push({
+        sourceId: item.id,
+        section: 'writing',
+        type: 'writing',
+        points: 25,
+        difficulty: item.difficulty,
+        tags: ['写作'],
+        groupId,
+        stem: item.prompt,
+        requirements: item.requirements,
+        reference: item.sample,
+        sample: item.sample,
+        keyPoints: item.keyPoints,
+        minWords: item.minWords,
+        maxWords: item.maxWords,
+        tips: item.tips,
+      }),
+    );
+    sections.push({
+      id: 'writing',
+      name: SECTION_MAP.writing.name,
+      en: SECTION_MAP.writing.en,
+      points: 25,
+      minutes: mode === 'full' ? SECTION_MAP.writing.minutes : SECTION_MAP.writing.practiceMinutes,
+      instructions: SECTION_MAP.writing.instructions,
+      questionIds: ids,
+    });
+  }
+
+  if (sections.length === 0) {
+    throw new Error('No section selected');
+  }
+
+  const title =
+    mode === 'full'
+      ? '上海高考英语全真模拟卷'
+      : `专项训练 · ${SECTION_MAP[options.section ?? sections[0].id].name}`;
+
+  return {
+    version: 1,
+    id: paperId,
+    seed,
+    createdAt: new Date().toISOString(),
+    mode,
+    sectionFilter: options.section,
+    title,
+    durationMin:
+      mode === 'full'
+        ? SECTION_META.reduce((n, s) => n + s.minutes, 0)
+        : SECTION_MAP[options.section ?? sections[0].id].practiceMinutes,
+    sections,
+    questions,
+    contexts,
+    wordBanks,
+    maxScore: questions.reduce((n, q) => n + q.points, 0),
+  };
+}
+
+export function paperSourceIds(paper: Paper): string[] {
+  return paper.questions.map((q) => q.sourceId);
+}
+
+export function questionsBySection(paper: Paper, section: SectionId): ExamQuestion[] {
+  const meta = paper.sections.find((s) => s.id === section);
+  if (!meta) return [];
+  const ids = new Set(meta.questionIds);
+  return paper.questions.filter((q) => ids.has(q.id));
+}
+
+export function groupQuestions(questions: ExamQuestion[]): ExamQuestion[][] {
+  const groups: ExamQuestion[][] = [];
+  const index = new Map<string, number>();
+  for (const q of questions) {
+    const existing = index.get(q.groupId);
+    if (existing === undefined) {
+      index.set(q.groupId, groups.length);
+      groups.push([q]);
+    } else {
+      groups[existing].push(q);
+    }
+  }
+  return groups;
+}
