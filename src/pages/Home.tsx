@@ -6,6 +6,7 @@ import { SECTION_META } from '../sections';
 import { bankTotals } from '../data';
 import { generatePaper } from '../lib/exam';
 import { formatDate, formatDuration, gradeFor } from '../lib/format';
+import { attemptScoreSplit } from '../lib/scoring';
 import { clearActive, loadActive, loadAttempts, loadSeenHistory, saveActive } from '../lib/storage';
 import type { ActiveDraft, ExamMode, SectionId } from '../types';
 
@@ -27,7 +28,11 @@ export default function HomePage() {
 
   const stats = useMemo(() => {
     if (attempts.length === 0) return { count: 0, avg: 0, best: 0, last: null as null | (typeof attempts)[number] };
-    const ratios = attempts.map((a) => (a.maxScore ? a.totalScore / a.maxScore : 0));
+    // Averages and grades track objective marks only; subjective estimates are shown separately.
+    const ratios = attempts.map((a) => {
+      const split = attemptScoreSplit(a);
+      return split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
+    });
     return {
       count: attempts.length,
       avg: ratios.reduce((n, r) => n + r, 0) / ratios.length,
@@ -85,8 +90,8 @@ export default function HomePage() {
   };
 
   const recent = attempts.slice(0, 3);
-  const lastRatio = stats.last && stats.last.maxScore ? stats.last.totalScore / stats.last.maxScore : 0;
-  const lastGrade = gradeFor(lastRatio);
+  const lastSplit = stats.last ? attemptScoreSplit(stats.last) : undefined;
+  const lastGrade = lastSplit ? gradeFor(lastSplit.objectiveScore, lastSplit.objectiveMax) : undefined;
 
   return (
     <div className="home-page">
@@ -130,16 +135,19 @@ export default function HomePage() {
             <span className="hero-card-label">{stats.last ? '最近一次成绩' : '全真模拟卷'}</span>
             <span className="hero-card-seal">模考</span>
           </div>
-          {stats.last ? (
+          {stats.last && lastSplit && lastGrade ? (
             <>
               <div className="hero-score">
-                <strong>{stats.last.totalScore}</strong>
-                <span>/ {stats.last.maxScore}</span>
+                <strong>{lastSplit.objectiveScore}</strong>
+                <span>/ {lastSplit.objectiveMax}</span>
               </div>
               <div className="hero-score-meta">
                 <Pill tone="accent">{lastGrade.label}</Pill>
                 <span>{formatDate(stats.last.submittedAt)}</span>
               </div>
+              <p className="hero-estimate-note">
+                客观题得分 · 主观题估分 {lastSplit.subjectiveEstimate}/{lastSplit.subjectiveMax}（不参与评级）
+              </p>
               <div className="hero-mini-bars">
                 {stats.last.sectionResults.slice(0, 5).map((s) => (
                   <div className="mini-bar" key={s.id}>
@@ -388,8 +396,9 @@ export default function HomePage() {
           </div>
           <div className="recent-grid">
             {recent.map((attempt) => {
-              const ratio = attempt.maxScore ? attempt.totalScore / attempt.maxScore : 0;
-              const grade = gradeFor(ratio);
+              const split = attemptScoreSplit(attempt);
+              const ratio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
+              const grade = gradeFor(split.objectiveScore, split.objectiveMax);
               return (
                 <Link className="recent-card" to={`/result/${attempt.id}`} key={attempt.id}>
                   <div className="recent-top">
@@ -397,10 +406,11 @@ export default function HomePage() {
                     <Pill tone={ratio >= 0.75 ? 'teal' : ratio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
                   </div>
                   <strong className="recent-score">
-                    {attempt.totalScore}
-                    <em>/ {attempt.maxScore}</em>
+                    {split.objectiveScore}
+                    <em>/ {split.objectiveMax}</em>
                   </strong>
                   <div className="recent-meta">
+                    <span>主观估分 {split.subjectiveEstimate}/{split.subjectiveMax}</span>
                     <span>{formatDate(attempt.submittedAt)}</span>
                     <span>{formatDuration(attempt.durationUsedSec)}</span>
                   </div>

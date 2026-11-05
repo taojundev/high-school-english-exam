@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, Printer, Spark, Target } from '../components/Ico
 import { EmptyState, Pill, ProgressBar, ScoreRing } from '../components/ui';
 import { generatePaper, paperReplayOptions } from '../lib/exam';
 import { formatClock, formatDate, formatDuration, gradeFor, percent } from '../lib/format';
+import { attemptScoreSplit, isEstimatedResult } from '../lib/scoring';
 import { clearActive, getAttempt, loadActive, loadSeenHistory, saveActive } from '../lib/storage';
 import type { Attempt, GenerateOptions, SectionId } from '../types';
 
@@ -37,12 +38,13 @@ export default function ResultPage() {
   }
 
   const { paper } = attempt;
-  const ratio = attempt.maxScore ? attempt.totalScore / attempt.maxScore : 0;
-  const grade = gradeFor(ratio);
-  const objective = attempt.results.filter((r) => r.type === 'mcq' || r.type === 'fill' || r.type === 'vocab');
+  // The grade comes from objective marks only; the subjective estimate is shown separately.
+  const split = attemptScoreSplit(attempt);
+  const objectiveRatio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
+  const grade = gradeFor(split.objectiveScore, split.objectiveMax);
+  const objective = attempt.results.filter((r) => !isEstimatedResult(r));
   const answered = attempt.results.filter((r) => (attempt.answers[r.id] ?? '').trim()).length;
   const correct = objective.filter((r) => r.correct).length;
-  const subjective = attempt.results.filter((r) => r.type === 'translation' || r.type === 'summary' || r.type === 'writing');
 
   const guardActive = () => {
     const active = loadActive();
@@ -123,20 +125,25 @@ export default function ResultPage() {
       <header className="result-hero">
         <div className="result-hero-copy">
           <span className="kicker">SCORE REPORT</span>
-          <h1>这一次，<em>{grade.label}</em>。</h1>
+          <h1>
+            这一次，客观题<em>{grade.label}</em>。
+          </h1>
           <p className="result-sub">
             {paper.title} · {formatDate(attempt.submittedAt)} · 用时 {formatDuration(attempt.durationUsedSec)} · 种子{' '}
             {paper.seed}
           </p>
           <div className="result-badges">
-            <Pill tone={ratio >= 0.75 ? 'teal' : ratio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
-            <Pill tone="muted">满分 {attempt.maxScore}</Pill>
+            <Pill tone={objectiveRatio >= 0.75 ? 'teal' : objectiveRatio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
+            <Pill tone="muted">客观题 {split.objectiveScore}/{split.objectiveMax}</Pill>
+            <Pill tone="gold">主观题估分 {split.subjectiveEstimate}/{split.subjectiveMax}（不参与评级）</Pill>
             <Pill tone="muted">已答 {answered}/{attempt.results.length}</Pill>
             <Pill tone="muted">{paper.mode === 'full' ? '全真模拟' : '专项训练'}</Pill>
           </div>
-          <p className="result-note">{grade.note}。分数只是快照，下面的失分分布和行动建议更值得花时间。</p>
+          <p className="result-note">
+            {grade.note}。评级只看客观题（{split.objectiveScore}/{split.objectiveMax}）；翻译、概要、写作的分数是初步估分，不参与评级。
+          </p>
         </div>
-        <ScoreRing score={attempt.totalScore} max={attempt.maxScore} label={grade.label} size={196} />
+        <ScoreRing score={split.objectiveScore} max={split.objectiveMax} label={`${grade.label} · 客观题`} size={196} />
       </header>
 
       <section className="result-stat-grid" aria-label="成绩摘要">
@@ -148,12 +155,12 @@ export default function ResultPage() {
           </em>
         </div>
         <div className="result-stat">
-          <span>主观题初评</span>
+          <span>主观题估分</span>
           <strong>
-            {subjective.reduce((n, r) => n + r.earned, 0)}
-            <i> / {subjective.reduce((n, r) => n + r.points, 0)}</i>
+            {split.subjectiveEstimate}
+            <i> / {split.subjectiveMax}</i>
           </strong>
-          <em>翻译 · 概要 · 写作</em>
+          <em>翻译 · 概要 · 写作（不参与评级）</em>
         </div>
         <div className="result-stat">
           <span>平均每题用时</span>
@@ -181,11 +188,7 @@ export default function ResultPage() {
           <div className="section-results">
             {attempt.sectionResults.map((section) => {
               const own = attempt.results.filter((r) => r.section === section.id);
-              const subjectiveOnly =
-                own.length > 0 &&
-                own.every(
-                  (r) => r.type === 'translation' || r.type === 'summary' || r.type === 'writing',
-                );
+              const subjectiveOnly = own.length > 0 && own.every((r) => isEstimatedResult(r));
               const rate = section.max ? section.score / section.max : 0;
               const displayRate = subjectiveOnly
                 ? rate
@@ -198,7 +201,7 @@ export default function ResultPage() {
                   <div className="section-result-name">
                     <strong>{section.name}</strong>
                     <span>
-                      {subjectiveOnly ? '得分率' : `${section.correct}/${section.total}`} ·{' '}
+                      {subjectiveOnly ? '估分得分率' : `${section.correct}/${section.total}`} ·{' '}
                       {Math.round(displayRate * 100)}%
                     </span>
                   </div>
@@ -312,7 +315,7 @@ export default function ResultPage() {
       </section>
 
       <p className="result-disclaimer">
-        说明：客观题按标准答案判分；翻译、概要、写作采用关键信息和语言特征进行规则初评，不能替代人工阅卷。自本版本起，主观题评分加入词数下限、整段复制与句法结构门控，主观板块按得分率统计；历史成绩单保留原评分，不重新计算。成绩与解析仅用于练习。
+        说明：客观题按标准答案判分，评级（卓越/优秀/良好/及格/待提升）只由客观题得分决定。翻译、概要、写作由关键词覆盖规则估算，不判断语义是否等价，也不宣称满分；最终以人工阅卷为准。自动估分上限为题目分数的 90%，低置信度作答再封顶 50%。历史成绩单保留原评分，不重新计算。成绩与解析仅用于练习。
       </p>
     </div>
   );

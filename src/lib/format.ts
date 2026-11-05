@@ -34,8 +34,13 @@ export function formatDate(iso: string): string {
   }
 }
 
-export function gradeFor(ratio: number): { label: string; note: string } {
-  if (ratio >= 0.9) return { label: '卓越', note: '已具备冲刺高分的实力' };
+/**
+ * Rating is computed from objective marks only. Pass `objectiveScore`/`objectiveMax`;
+ * subjective estimates must never raise a grade.
+ */
+export function gradeFor(score: number, max: number): { label: string; note: string } {
+  const ratio = max > 0 ? score / max : 0;
+  if (ratio >= 0.9) return { label: '卓越', note: '客观题表现突出' };
   if (ratio >= 0.85) return { label: '优秀', note: '基础扎实，细节仍可提升' };
   if (ratio >= 0.75) return { label: '良好', note: '整体稳定，存在明显提分空间' };
   if (ratio >= 0.6) return { label: '及格', note: '基础尚可，需要系统补漏' };

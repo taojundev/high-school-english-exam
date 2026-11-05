@@ -15,6 +15,74 @@ import { buildSuggestions } from './advice';
 const roundHalf = (n: number) => Math.round(n * 2) / 2;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
+/** Sections whose marks are a rough estimate, never a verdict on correctness. */
+const ESTIMATED_SECTIONS = new Set<SectionId>(['translation', 'summary', 'writing']);
+
+/** An automatic estimate never claims full marks. */
+const ESTIMATE_MAX_RATE = 0.9;
+/** A low-confidence answer (word salad, way off length, copied text) is capped at half marks. */
+const LOW_CONFIDENCE_MAX_RATE = 0.5;
+
+export function isEstimatedSection(section: SectionId): boolean {
+  return ESTIMATED_SECTIONS.has(section);
+}
+
+/** Old attempts have no `graded` field, so fall back to the section. */
+export function isEstimatedResult(result: Pick<QuestionResult, 'section' | 'graded'>): boolean {
+  return result.graded === 'estimated' || (result.graded === undefined && isEstimatedSection(result.section));
+}
+
+function estimateCap(points: number, lowConfidence: boolean): number {
+  const ceiling = roundHalf(points * ESTIMATE_MAX_RATE);
+  return lowConfidence ? Math.min(ceiling, points * LOW_CONFIDENCE_MAX_RATE) : ceiling;
+}
+
+/** Apply the estimate ceiling; low-confidence answers are also capped at half marks. */
+function capEstimate(rawEarned: number, points: number, lowConfidence: boolean): number {
+  return clamp(Math.min(rawEarned, estimateCap(points, lowConfidence)), 0, points);
+}
+
+export interface ScoreSplit {
+  /** Real objective marks and their maximum. Rating is computed from these two only. */
+  objectiveScore: number;
+  objectiveMax: number;
+  /** Estimated subjective marks and their maximum. Never part of the rating. */
+  subjectiveEstimate: number;
+  subjectiveMax: number;
+  /** Objective + estimate, for display only. */
+  totalScore: number;
+  maxScore: number;
+}
+
+export function scoreSplit(results: QuestionResult[]): ScoreSplit {
+  let objectiveScore = 0;
+  let objectiveMax = 0;
+  let subjectiveEstimate = 0;
+  let subjectiveMax = 0;
+  for (const result of results) {
+    if (isEstimatedResult(result)) {
+      subjectiveEstimate += result.earned;
+      subjectiveMax += result.points;
+    } else {
+      objectiveScore += result.earned;
+      objectiveMax += result.points;
+    }
+  }
+  return {
+    objectiveScore: roundHalf(objectiveScore),
+    objectiveMax: roundHalf(objectiveMax),
+    subjectiveEstimate: roundHalf(subjectiveEstimate),
+    subjectiveMax: roundHalf(subjectiveMax),
+    totalScore: roundHalf(objectiveScore + subjectiveEstimate),
+    maxScore: roundHalf(objectiveMax + subjectiveMax),
+  };
+}
+
+/** Attempts saved before r4 lack the split fields, so derive them from the stored results. */
+export function attemptScoreSplit(attempt: Pick<Attempt, 'results'>): ScoreSplit {
+  return scoreSplit(attempt.results);
+}
+
 export function normalizeText(value: string): string {
   return value
     .replace(/[\u2018\u2019]/g, "'")
@@ -191,11 +259,17 @@ const CRAM_WINDOW = 5;
 
 const MIN_CONTENT_DENSITY = 0.4;
 const MIN_PURE_FILLER_DENSITY = 0.25;
+/** A back-to-back repeated filler token is a strong enough sign on its own at this density. */
+const MIN_REPEATED_FILLER_DENSITY = 0.6;
 
 /**
  * A padded answer made of function words ("... the the the") can still pass the word-count gate.
  * Treat it as low confidence when the content-word share is low and the padding either repeats a
  * token back to back or leaves almost no content words at all.
+ *
+ * A keyword list that happens to contain verbs ("Seeing the the the the Seeing volunteer moved")
+ * can clear the clause gate, so immediate repetition must also flag a moderately content-light
+ * answer. That only lowers the estimate; it does not change the coverage gates.
  */
 function isLowContentDensity(text: string): boolean {
   const tokens = normalizeText(text).match(TOKEN_RE) ?? [];
@@ -205,7 +279,10 @@ function isLowContentDensity(text: string): boolean {
   ).length;
   const ratio = content / tokens.length;
   const repeated = tokens.some((token, index) => index > 0 && token === tokens[index - 1]);
-  return ratio < MIN_CONTENT_DENSITY && (repeated || ratio < MIN_PURE_FILLER_DENSITY);
+  return (
+    (ratio < MIN_CONTENT_DENSITY && (repeated || ratio < MIN_PURE_FILLER_DENSITY)) ||
+    (repeated && ratio < MIN_REPEATED_FILLER_DENSITY)
+  );
 }
 
 function clauseShape(raw: string, hits: Hit[]): ClauseShape {
@@ -328,13 +405,14 @@ function scoreTranslation(question: Paper['questions'][number], raw: string) {
   if (!hasStructure) contentRatio = Math.min(contentRatio, 0.5);
   if (tooShort) contentRatio = Math.min(contentRatio, 0.4);
   if (tooLong) contentRatio = Math.min(contentRatio, 0.8);
-  let earned = raw.trim() ? roundHalf(contentRatio * question.points) : 0;
+  let rawEarned = raw.trim() ? roundHalf(contentRatio * question.points) : 0;
   // Missing length or clause quality caps the content item at 1 point, whatever the coverage.
-  if (raw.trim() && (tooShort || !hasStructure)) earned = Math.min(earned, 1);
+  if (raw.trim() && (tooShort || !hasStructure)) rawEarned = Math.min(rawEarned, 1);
   const missing = covered.filter((c) => !c.ok).map((c) => c.label);
   // A padded answer can be long enough yet still mostly function words.
   const lowDensity = Boolean(raw.trim()) && isLowContentDensity(raw);
   const lowConfidence = Boolean(raw.trim()) && (!hasStructure || tooShort || tooLong || lowDensity);
+  const earned = capEstimate(rawEarned, question.points, lowConfidence);
   const reason = !shape.clause
     ? '当前作答缺少完整句子，只能按关键词粗略初评'
     : shape.crammed
@@ -345,16 +423,9 @@ function scoreTranslation(question: Paper['questions'][number], raw: string) {
           ? `当前 ${words} 词明显多于参考译文的 ${referenceWords} 词`
           : '实词比例过低，更像虚词填充而非译文';
   const feedback = raw.trim()
-    ? `关键信息覆盖 ${coveredCount}/${total}${missing.length ? `；待补：${missing.join('、')}` : ''}。${lowConfidence ? `${reason}，以下为低置信度初评。` : '句法与篇幅基本达标。'}自动初评按关键信息给分，最终以人工阅卷为准。`
+    ? `关键信息覆盖 ${coveredCount}/${total}${missing.length ? `；待补：${missing.join('、')}` : ''}。${lowConfidence ? `${reason}，以下为低置信度初评。` : '句法与篇幅基本达标。'}自动估分按关键信息覆盖规则估算，不判断语义是否等价，也不宣称满分，最终以人工阅卷为准。`
     : '未作答。先拆分中文句子的主干，再确定时态、语态和连接方式。';
-  return {
-    covered,
-    earned,
-    correct:
-      coveredCount === total && hasStructure && !tooShort && !tooLong && earned >= question.points * 0.66,
-    feedback,
-    lowConfidence,
-  };
+  return { covered, earned, feedback, lowConfidence };
 }
 
 function scoreSummary(question: Paper['questions'][number], raw: string, source: string) {
@@ -396,9 +467,10 @@ function scoreSummary(question: Paper['questions'][number], raw: string, source:
   if (countLinkers(raw) < 2) expression -= 0.5;
   if (copied) expression -= 0.5;
   expression = Math.max(0, expression);
-  const earned = clamp(roundHalf(coverageScore + lengthScore + expression), 0, question.points);
+  const rawEarned = clamp(roundHalf(coverageScore + lengthScore + expression), 0, question.points);
   const missing = covered.filter((c) => !c.ok).map((c) => c.label);
   const lowConfidence = Boolean(raw.trim()) && (farTooLong || farTooShort || !hasStructure || copied);
+  const earned = capEstimate(rawEarned, question.points, lowConfidence);
   const confidenceNote = copied
     ? '检测到与原文连续重合的片段，覆盖项按减半计分，这是低置信度初评。'
     : farTooLong
@@ -411,21 +483,9 @@ function scoreSummary(question: Paper['questions'][number], raw: string, source:
             ? '当前作答没有完整句子，不能按要点完整计分，这是低置信度初评。'
             : '';
   const feedback = raw.trim()
-    ? `要点覆盖 ${coveredCount}/${total}（${coverageScore.toFixed(1)}/6）；词数 ${words}（${lengthScore}/2）；连贯与压缩 ${expression.toFixed(1)}/2。${missing.length ? `待补要点：${missing.join('、')}。` : copied || farTooLong || farTooShort || !hasStructure ? '' : '要点较完整。'}${confidenceNote}自动初评仅供练习参考。`
+    ? `要点覆盖 ${coveredCount}/${total}（${coverageScore.toFixed(1)}/6）；词数 ${words}（${lengthScore}/2）；连贯与压缩 ${expression.toFixed(1)}/2。${missing.length ? `待补要点：${missing.join('、')}。` : copied || farTooLong || farTooShort || !hasStructure ? '' : '要点较完整。'}${confidenceNote}自动估分按关键词覆盖规则估算，不判断语义是否等价，也不宣称满分，最终以人工阅卷为准。`
     : '未作答。先通读原文，划出主题句和每段关键词，再用自己的话压缩成 3–4 句。';
-  return {
-    covered,
-    earned,
-    correct:
-      coveredCount === total &&
-      hasStructure &&
-      !copied &&
-      words >= min * 0.8 &&
-      words <= max * 1.25 &&
-      earned >= question.points * 0.6,
-    feedback,
-    lowConfidence,
-  };
+  return { covered, earned, feedback, lowConfidence };
 }
 
 function scoreWriting(question: Paper['questions'][number], raw: string) {
@@ -473,11 +533,12 @@ function scoreWriting(question: Paper['questions'][number], raw: string) {
     paragraphScore = Math.min(paragraphScore, 1);
     organization = Math.min(organization, 1);
   }
-  const earned = clamp(roundHalf(content + language + organization), 0, question.points);
+  const rawEarned = clamp(roundHalf(content + language + organization), 0, question.points);
   const missing = covered.filter((c) => !c.ok).map((c) => c.label);
   const farTooLong = words > max * 1.25;
   const farTooShort = words > 0 && words < min * 0.8;
   const lowConfidence = Boolean(raw.trim()) && (words < 80 || farTooShort || farTooLong || !hasStructure);
+  const earned = capEstimate(rawEarned, question.points, lowConfidence);
   const confidenceNote = words < 80
     ? `当前仅 ${words} 词（建议 ${min}–${max} 词），内容项上限为 2/10，这是低置信度初评。`
     : farTooShort
@@ -487,20 +548,8 @@ function scoreWriting(question: Paper['questions'][number], raw: string) {
         : !hasStructure
           ? '当前作答没有完整句子，只能作低置信度初评。'
           : '';
-  const feedback = `内容要点 ${coveredCount}/${total}（${content.toFixed(1)}/10）；语言 ${language.toFixed(1)}/8；结构 ${organization}/7；共 ${words} 词。${missing.length ? `可能遗漏：${missing.join('、')}。` : farTooShort || words < 80 ? '' : '要点覆盖较完整。'}${confidenceNote}自动估分仅供练习参考，请结合评分细则与范文自评。`;
-  return {
-    covered,
-    earned,
-    correct:
-      !empty &&
-      coveredCount === total &&
-      hasStructure &&
-      words >= min * 0.8 &&
-      words <= max * 1.25 &&
-      earned >= question.points * 0.6,
-    feedback,
-    lowConfidence,
-  };
+  const feedback = `内容要点 ${coveredCount}/${total}（${content.toFixed(1)}/10）；语言 ${language.toFixed(1)}/8；结构 ${organization}/7；共 ${words} 词。${missing.length ? `可能遗漏：${missing.join('、')}。` : farTooShort || words < 80 ? '' : '要点覆盖较完整。'}${confidenceNote}自动估分按关键词覆盖规则估算，不判断语义是否等价，也不宣称满分，最终以人工阅卷为准。`;
+  return { covered, earned, feedback, lowConfidence };
 }
 
 export interface AttemptMeta {
@@ -537,6 +586,7 @@ export function scoreAttempt(
       return {
         ...base,
         earned: correct ? q.points : 0,
+        graded: 'objective',
         correct,
         selected,
         answer: q.answer,
@@ -550,6 +600,7 @@ export function scoreAttempt(
       return {
         ...base,
         earned: correct ? q.points : 0,
+        graded: 'objective',
         correct,
         answerText: q.answerText,
         userText: raw,
@@ -561,7 +612,7 @@ export function scoreAttempt(
       return {
         ...base,
         earned: scored.earned,
-        correct: scored.correct,
+        graded: 'estimated',
         answerText: q.reference,
         userText: raw,
         covered: scored.covered,
@@ -576,7 +627,7 @@ export function scoreAttempt(
       return {
         ...base,
         earned: scored.earned,
-        correct: scored.correct,
+        graded: 'estimated',
         answerText: q.reference,
         userText: raw,
         covered: scored.covered,
@@ -589,7 +640,7 @@ export function scoreAttempt(
     return {
       ...base,
       earned: scored.earned,
-      correct: scored.correct,
+      graded: 'estimated',
       answerText: q.reference,
       userText: raw,
       covered: scored.covered,
@@ -642,15 +693,22 @@ export function scoreAttempt(
   });
 
   const tagStats = sectionResults.flatMap((s) => s.tagStats);
-  const totalScore = roundHalf(results.reduce((n, r) => n + r.earned, 0));
+  const split = scoreSplit(results);
+  const totalScore = split.totalScore;
+  const objectiveScore = split.objectiveScore;
+  const objectiveMax = split.objectiveMax;
+  const subjectiveEstimate = split.subjectiveEstimate;
+  const subjectiveMax = split.subjectiveMax;
   const unanswered = results.filter((r) => !(answers[r.id] ?? '').trim()).length;
   const suggestions = buildSuggestions({
     results,
     sectionResults,
     tagStats,
     timeBySection: meta.timeBySection,
-    totalScore,
-    maxScore: paper.maxScore,
+    objectiveScore,
+    objectiveMax,
+    subjectiveEstimate,
+    subjectiveMax,
     paper,
     unanswered,
   });
@@ -664,6 +722,10 @@ export function scoreAttempt(
     tagStats,
     totalScore,
     maxScore: paper.maxScore,
+    objectiveScore,
+    objectiveMax,
+    subjectiveEstimate,
+    subjectiveMax,
     startedAt: meta.startedAt,
     submittedAt: meta.submittedAt,
     durationUsedSec: meta.durationUsedSec,
@@ -671,7 +733,7 @@ export function scoreAttempt(
     suggestions,
     transcriptReveals: meta.transcriptReveals,
     replayCounts: meta.replayCounts,
-    scoringVersion: 2,
+    scoringVersion: 3,
   };
 }
 

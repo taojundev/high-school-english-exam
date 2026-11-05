@@ -240,7 +240,13 @@ export interface QuestionResult {
   earned: number;
   tags: string[];
   difficulty: Difficulty;
-  correct: boolean | null;
+  /** Objective items only: true/false. Estimated (subjective) items omit it, so no tick/cross can render. */
+  correct?: boolean;
+  /**
+   * 'objective' = graded against the answer key; 'estimated' = translation/summary/writing rough estimate.
+   * Optional so attempts saved before r4 keep working; `isEstimatedResult` falls back to the section.
+   */
+  graded?: 'objective' | 'estimated';
   selected?: number;
   answer?: number;
   answerText?: string;
@@ -294,8 +300,15 @@ export interface Attempt {
   results: QuestionResult[];
   sectionResults: SectionResult[];
   tagStats: TagStat[];
+  /** All points, objective + estimated. Kept for older reports; the grade ignores the estimated part. */
   totalScore: number;
   maxScore: number;
+  /** Real marks from objective questions only (听力/语法/词汇/完形/阅读). Rating uses this pair. */
+  objectiveScore?: number;
+  objectiveMax?: number;
+  /** Rough estimate for translation/summary/writing; never part of the rating. */
+  subjectiveEstimate?: number;
+  subjectiveMax?: number;
   startedAt: string;
   submittedAt: string;
   durationUsedSec: number;
@@ -303,7 +316,7 @@ export interface Attempt {
   suggestions: Suggestion[];
   transcriptReveals: string[];
   replayCounts: Record<string, number>;
-  /** 2 = subjective scoring tightened (length/copy gates). Older attempts keep their original marks. */
+  /** 3 = subjective marks are estimates only (90% ceiling, 50% for low confidence) and no longer graded true/false. Older attempts keep their original marks. */
   scoringVersion?: number;
 }
 

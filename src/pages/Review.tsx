@@ -3,6 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Check, X } from '../components/Icons';
 import { EmptyState } from '../components/ui';
 import { formatDate } from '../lib/format';
+import { attemptScoreSplit, isEstimatedResult } from '../lib/scoring';
+import { isReviewWrong, reviewBadge } from '../lib/review';
 import { getAttempt } from '../lib/storage';
 import type { Attempt, ExamQuestion, QuestionResult, SectionId } from '../types';
 
@@ -29,7 +31,7 @@ export default function ReviewPage() {
     if (!attempt) return [];
     return attempt.results.filter((result) => {
       const answered = Boolean((attempt.answers[result.id] ?? '').trim());
-      if (filter === 'wrong' && result.correct) return false;
+      if (filter === 'wrong' && !isReviewWrong(result)) return false;
       if (filter === 'blank' && answered) return false;
       if (section !== 'all' && result.section !== section) return false;
       return true;
@@ -50,7 +52,8 @@ export default function ReviewPage() {
     );
   }
 
-  const wrongCount = attempt.results.filter((r) => !r.correct).length;
+  const split = attemptScoreSplit(attempt);
+  const wrongCount = attempt.results.filter((r) => isReviewWrong(r)).length;
   const blankCount = attempt.results.filter((r) => !(attempt.answers[r.id] ?? '').trim()).length;
 
   return (
@@ -71,7 +74,10 @@ export default function ReviewPage() {
           <span className="kicker">QUESTION REVIEW</span>
           <h1>逐题复盘</h1>
           <p>
-            {attempt.paper.title} · {formatDate(attempt.submittedAt)} · 得分 {attempt.totalScore}/{attempt.maxScore}
+            {attempt.paper.title} · {formatDate(attempt.submittedAt)} · 客观题 {split.objectiveScore}/{split.objectiveMax}
+            {split.subjectiveMax > 0
+              ? ` · 主观题估分 ${split.subjectiveEstimate}/${split.subjectiveMax}（不参与评级）`
+              : ''}
           </p>
         </div>
         <Link to={`/result/${attempt.id}`} className="btn btn-ghost btn-sm no-print">
@@ -153,22 +159,11 @@ function ReviewItem({
 }) {
   const context = attempt.paper.contexts[question.groupId];
   const answered = Boolean((attempt.answers[result.id] ?? '').trim());
-  const subjective = question.type === 'translation' || question.type === 'summary' || question.type === 'writing';
-  const status = result.correct ? 'correct' : answered ? 'wrong' : 'blank';
-  const statusLabel = result.lowConfidence
-    ? '低置信度初评'
-    : result.correct
-      ? subjective
-        ? '达标'
-        : '正确'
-      : answered
-        ? subjective
-          ? '待提升'
-          : '错误'
-        : '未作答';
+  const badge = reviewBadge(result, answered);
+  const estimated = isEstimatedResult(result);
 
   return (
-    <article className={`review-item status-${status}`} id={`review-${result.id}`}>
+    <article className={`review-item status-${badge.status}`} id={`review-${result.id}`}>
       <div className="review-head">
         <div className="review-number">{result.number}</div>
         <div className="review-title">
@@ -183,12 +178,12 @@ function ReviewItem({
           </div>
         </div>
         <div className="review-status">
-          <span className={`status-badge ${status}`}>
-            {status === 'correct' ? <Check size={14} /> : status === 'wrong' ? <X size={14} /> : null}
-            {statusLabel}
+          <span className={`status-badge ${badge.status}`}>
+            {badge.icon === 'check' ? <Check size={14} /> : badge.icon === 'cross' ? <X size={14} /> : null}
+            {badge.label}
           </span>
           <span className="review-points">
-            {result.earned}/{result.points} 分
+            {estimated ? `估分 ${result.earned}/${result.points}` : `${result.earned}/${result.points} 分`}
           </span>
         </div>
       </div>
@@ -303,11 +298,11 @@ function ReviewItem({
 
         {result.covered && result.covered.length > 0 ? (
           <div className="coverage">
-            <span className="coverage-label">关键信息覆盖</span>
+            <span className="coverage-label">关键信息覆盖（估分依据）</span>
             <div className="coverage-list">
               {result.covered.map((point) => (
                 <span key={point.label} className={point.ok ? 'coverage-chip ok' : 'coverage-chip missing'}>
-                  {point.ok ? <Check size={13} /> : <X size={13} />}
+                  {estimated ? (point.ok ? '已覆盖' : '待补') : point.ok ? <Check size={13} /> : <X size={13} />}
                   {point.label}
                 </span>
               ))}

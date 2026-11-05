@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { BANK } from '../data';
 import { generatePaper } from './exam';
 import { buildSuggestions } from './advice';
-import { countWords, keyPointCoverage, scoreAttempt, type AttemptMeta } from './scoring';
+import { gradeFor } from './format';
+import {
+  countWords,
+  isEstimatedResult,
+  keyPointCoverage,
+  scoreAttempt,
+  attemptScoreSplit,
+  scoreSplit,
+  type AttemptMeta,
+} from './scoring';
+import { isReviewWrong, reviewBadge } from './review';
 import type { ExamQuestion, Paper, QuestionResult, SectionId, SectionResult } from '../types';
 
 const meta = (): AttemptMeta => ({
@@ -172,6 +182,11 @@ function truncatedVariants(reference: string, patterns: string[]): string[] {
   });
 }
 
+function expectEstimated(result: QuestionResult, label?: string) {
+  expect(result.graded, label).toBe('estimated');
+  expect(result.correct, label).toBeUndefined();
+}
+
 function perfectAnswers(paper: Paper): Record<string, string> {
   const answers: Record<string, string> = {};
   for (const q of paper.questions) {
@@ -191,8 +206,12 @@ describe('scoring', () => {
     expect(objective.every((r) => r.correct)).toBe(true);
     expect(attempt.sectionResults.find((s) => s.id === 'listening')?.score).toBe(25);
     expect(attempt.sectionResults.find((s) => s.id === 'reading')?.score).toBe(40);
-    expect(attempt.sectionResults.find((s) => s.id === 'translation')?.score).toBe(15);
-    expect(attempt.totalScore).toBeGreaterThanOrEqual(145);
+    expect(attempt.sectionResults.find((s) => s.id === 'translation')?.score).toBe(12.5);
+    expect(attempt.objectiveScore).toBe(100);
+    expect(attempt.objectiveMax).toBe(100);
+    expect(attempt.subjectiveEstimate).toBe(44);
+    expect(attempt.subjectiveMax).toBe(50);
+    expect(attempt.totalScore).toBe(144);
   });
 
   it('gives zero for a blank paper', () => {
@@ -224,7 +243,8 @@ describe('scoring', () => {
     const partial = scoreAttempt(paper, { [q.id]: q.reference?.split(' ').slice(0, 4).join(' ') ?? '' }, meta());
     const full = scoreAttempt(paper, { [q.id]: q.reference ?? '' }, meta());
     expect(partial.results[0].earned).toBeLessThan(full.results[0].earned);
-    expect(full.results[0].earned).toBe(3);
+    expect(full.results[0].earned).toBe(2.5);
+    expectEstimated(full.results[0]);
     expect(full.results[0].covered?.every((c) => c.ok)).toBe(true);
   });
 
@@ -284,10 +304,10 @@ describe('scoring', () => {
     const weird = scoreAttempt(paper, { q1: 'seeing volunteer moved' }, meta()).results[0];
     const full = scoreAttempt(paper, { q1: item.reference }, meta()).results[0];
     expect(weird.earned).toBeLessThanOrEqual(1);
-    expect(weird.correct).toBe(false);
+    expectEstimated(weird);
     expect(weird.lowConfidence).toBe(true);
-    expect(full.earned).toBe(3);
-    expect(full.correct).toBe(true);
+    expect(full.earned).toBe(2.5);
+    expectEstimated(full);
   });
 
   it('caps a padded counterexample translation', () => {
@@ -295,7 +315,7 @@ describe('scoring', () => {
     const item = BANK.translation[0];
     const result = scoreAttempt(translationPaper(item), { q1: 'seeing volunteer moved the teacher' }, meta()).results[0];
     expect(result.earned).toBeLessThanOrEqual(1);
-    expect(result.correct).toBe(false);
+    expectEstimated(result);
     expect(result.lowConfidence).toBe(true);
   });
 
@@ -309,7 +329,7 @@ describe('scoring', () => {
     // Guard against a vacuous test: the keyword window really does cover every content point.
     expect(result.covered?.every((c) => c.ok)).toBe(true);
     expect(result.earned).toBeLessThanOrEqual(1);
-    expect(result.correct).toBe(false);
+    expectEstimated(result);
   });
 
   it('never lets a truncated keyword variant pass as a translation', () => {
@@ -318,28 +338,28 @@ describe('scoring', () => {
       for (const variant of truncatedVariants(item.reference, item.keyPoints[0].patterns)) {
         const result = scoreAttempt(paper, { q1: variant }, meta()).results[0];
         expect(result.earned, `${item.id}: "${variant}"`).toBeLessThanOrEqual(1);
-        expect(result.correct, `${item.id}: "${variant}"`).toBe(false);
+        expectEstimated(result, `${item.id}: "${variant}"`);
         expect(result.lowConfidence, `${item.id}: "${variant}"`).toBe(true);
       }
     }
   });
 
-  it('flags function-word padded translations without touching their score', () => {
+  it('caps function-word padded translations at half marks', () => {
     // Each answer is long enough and clause-shaped, so only the content-density check can flag it.
     const padding: Array<[string, string, number]> = [
-      ['t-01', 'Seeing the students the volunteer the the the', 2],
-      ['t-02', 'Not until midnight did he realize the the the the', 2],
+      ['t-01', 'Seeing the students the volunteer the the the', 1.5],
+      ['t-02', 'Not until midnight did he realize the the the the', 1.5],
       ['t-03', 'Not only is the book interesting but it also the the the', 1],
-      ['t-29', 'He can speak not only the the', 2],
-      ['t-30', 'The doctor advised him to eat less sugar and the the the the the the the', 2],
+      ['t-29', 'He can speak not only the the', 1.5],
+      ['t-30', 'The doctor advised him to eat less sugar and the the the the the the the', 1.5],
     ];
     for (const [id, text, earned] of padding) {
       const item = BANK.translation.find((t) => t.id === id)!;
       const result = scoreAttempt(translationPaper(item), { q1: text }, meta()).results[0];
       expect(result.lowConfidence, `${id}: ${text}`).toBe(true);
-      // Only the confidence marker changed; the earned points stay where they were.
+      // Low-confidence estimates are capped at half of the question's marks.
       expect(result.earned, `${id}: ${text}`).toBe(earned);
-      expect(result.correct, `${id}: ${text}`).toBe(false);
+      expectEstimated(result, `${id}: ${text}`);
       expect(result.feedback, `${id}: ${text}`).toContain('实词比例过低');
     }
   });
@@ -399,11 +419,11 @@ describe('scoring', () => {
     }
   });
 
-  it('still gives every bank reference translation full marks', () => {
+  it('caps every bank reference translation at the 90% estimate ceiling', () => {
     for (const item of BANK.translation) {
       const result = scoreAttempt(translationPaper(item), { q1: item.reference }, meta()).results[0];
-      expect(result.earned, item.id).toBe(3);
-      expect(result.correct, item.id).toBe(true);
+      expect(result.earned, item.id).toBe(2.5);
+      expectEstimated(result, item.id);
       expect(result.lowConfidence, item.id).toBe(false);
     }
   });
@@ -414,8 +434,8 @@ describe('scoring', () => {
     expect(countWords(rewrite)).toBeGreaterThanOrEqual(8);
     expect(countWords(rewrite)).toBeLessThanOrEqual(10);
     const result = scoreAttempt(translationPaper(item), { q1: rewrite }, meta()).results[0];
-    expect(result.earned).toBe(3);
-    expect(result.correct).toBe(true);
+    expect(result.earned).toBe(2.5);
+    expectEstimated(result);
     expect(result.lowConfidence).toBe(false);
   });
 
@@ -446,7 +466,7 @@ describe('scoring', () => {
     expect(countWords(item.text)).toBeGreaterThan(item.maxWords * 1.25);
     expect(pasted.covered?.every((c) => c.ok)).toBe(true);
     expect(pasted.earned).toBeLessThan(5);
-    expect(pasted.correct).toBe(false);
+    expectEstimated(pasted);
     expect(pasted.lowConfidence).toBe(true);
     expect(pasted.feedback).toContain('低置信度初评');
     expect(pasted.feedback).not.toContain('要点较完整');
@@ -480,8 +500,8 @@ describe('scoring', () => {
     );
     const result = scoreAttempt(paper, { q1: checklist }, meta()).results[0];
     expect(result.covered?.every((c) => c.ok)).toBe(true);
-    expect(result.earned).toBeLessThanOrEqual(6);
-    expect(result.correct).toBe(false);
+    expect(result.earned).toBeLessThanOrEqual(5);
+    expectEstimated(result);
     expect(result.lowConfidence).toBe(true);
     expect(result.feedback).not.toContain('要点较完整');
   });
@@ -510,8 +530,8 @@ describe('scoring', () => {
         { [`summary-${item.id}`]: { kind: 'passage', title: item.title, text: item.text } },
       );
       const result = scoreAttempt(paper, { q1: item.sample }, meta()).results[0];
-      expect(result.earned, item.id).toBeGreaterThanOrEqual(9);
-      expect(result.correct, item.id).toBe(true);
+      expect(result.earned, item.id).toBe(9);
+      expectEstimated(result, item.id);
     }
   });
 
@@ -543,7 +563,7 @@ describe('scoring', () => {
     expect(writing.covered?.filter((c) => c.ok).length ?? 0).toBeGreaterThan(0);
     expect(writing.covered?.filter((c) => c.ok).length).toBe(item.keyPoints.length);
     expect(writing.earned).toBeLessThanOrEqual(5);
-    expect(writing.correct).toBe(false);
+    expectEstimated(writing);
     expect(writing.lowConfidence).toBe(true);
     expect(writing.feedback).toContain('低置信度初评');
     const section = attempt.sectionResults[0];
@@ -582,7 +602,7 @@ describe('scoring', () => {
     expect(result.covered?.filter((c) => c.ok).length).toBe(item.keyPoints.length);
     // The answer has full sentences, so only the <80-word content cap can keep it at 5 or below.
     expect(result.earned).toBeLessThanOrEqual(5);
-    expect(result.correct).toBe(false);
+    expectEstimated(result);
     expect(result.lowConfidence).toBe(true);
     expect(result.feedback).toContain('内容项上限为 2/10');
   });
@@ -618,12 +638,179 @@ describe('scoring', () => {
       sectionResults: [writingSection],
       tagStats: [],
       timeBySection: {},
-      totalScore: 90,
-      maxScore: 100,
+      objectiveScore: 90,
+      objectiveMax: 100,
+      subjectiveEstimate: 10,
+      subjectiveMax: 25,
       paper,
       unanswered: 0,
     });
     expect(suggestions.some((s) => s.title.includes('冲击高分'))).toBe(false);
     expect(suggestions.some((s) => s.section === 'writing')).toBe(true);
+  });
+
+  it('never writes a correct flag on estimated questions', () => {
+    const paper = generatePaper({ mode: 'full', seed: 55 });
+    const attempt = scoreAttempt(paper, perfectAnswers(paper), meta());
+    const estimated = attempt.results.filter((r) => isEstimatedResult(r));
+    const objective = attempt.results.filter((r) => !isEstimatedResult(r));
+    expect(estimated.length).toBeGreaterThan(0);
+    expect(estimated.every((r) => r.graded === 'estimated' && r.correct === undefined)).toBe(true);
+    expect(objective.every((r) => r.graded === 'objective' && typeof r.correct === 'boolean')).toBe(true);
+  });
+
+  it('caps a word-salad translation at 1.5/3 and never calls it correct', () => {
+    const item = BANK.translation[0];
+    const salad = 'Seeing the the the the Seeing volunteer moved';
+    const result = scoreAttempt(translationPaper(item), { q1: salad }, meta()).results[0];
+    expect(result.earned).toBeLessThanOrEqual(1.5);
+    expectEstimated(result);
+    expect(result.lowConfidence).toBe(true);
+  });
+
+  it('caps every bank writing sample at 22.5/25', () => {
+    for (const item of BANK.writing) {
+      const paper = paperWith([
+        {
+          sourceId: item.id,
+          section: 'writing',
+          type: 'writing',
+          points: 25,
+          difficulty: item.difficulty,
+          tags: ['写作'],
+          groupId: `writing-${item.id}`,
+          stem: item.prompt,
+          requirements: item.requirements,
+          reference: item.sample,
+          sample: item.sample,
+          keyPoints: item.keyPoints,
+          minWords: item.minWords,
+          maxWords: item.maxWords,
+          tips: item.tips,
+        },
+      ]);
+      const result = scoreAttempt(paper, { q1: item.sample }, meta()).results[0];
+      expect(result.earned, item.id).toBe(22.5);
+      expectEstimated(result, item.id);
+      expect(result.lowConfidence, item.id).toBe(false);
+    }
+  });
+
+  it('rates only on objective marks, never on the subjective estimate', () => {
+    const make = (over: Partial<QuestionResult> & Pick<QuestionResult, 'id' | 'section' | 'type' | 'points' | 'earned'>): QuestionResult => ({
+      sourceId: over.id,
+      number: 1,
+      tags: [],
+      difficulty: 2,
+      ...over,
+    });
+    const objectivePerfect = Array.from({ length: 100 }, (_, i) =>
+      make({
+        id: `o${i}`,
+        section: 'reading',
+        type: 'mcq',
+        points: 1,
+        earned: 1,
+        graded: 'objective',
+        correct: true,
+      }),
+    );
+    const objectiveWeak = objectivePerfect.map((result, i) => ({ ...result, earned: i < 55 ? 1 : 0, correct: i < 55 }));
+    const subjective = [
+      make({ id: 'sub-1', section: 'translation', type: 'translation', points: 15, earned: 13.5, graded: 'estimated' }),
+      make({ id: 'sub-2', section: 'summary', type: 'summary', points: 10, earned: 9, graded: 'estimated' }),
+      make({ id: 'sub-3', section: 'writing', type: 'writing', points: 25, earned: 22.5, graded: 'estimated' }),
+    ];
+
+    const high = scoreSplit([...objectivePerfect, ...subjective]);
+    expect(high.objectiveScore).toBe(100);
+    expect(high.objectiveMax).toBe(100);
+    expect(high.subjectiveEstimate).toBe(45);
+    expect(high.subjectiveMax).toBe(50);
+    expect(gradeFor(high.objectiveScore, high.objectiveMax).label).toBe('卓越');
+
+    const low = scoreSplit([...objectiveWeak, ...subjective]);
+    expect(low.objectiveScore).toBe(55);
+    expect(low.objectiveMax).toBe(100);
+    expect(low.subjectiveEstimate).toBe(45);
+    // Folding the estimate into the rating would give 100/150 = 良好 here; the objective-only
+    // rating must stay identical to grading the objective marks directly.
+    expect(gradeFor(low.objectiveScore, low.objectiveMax)).toEqual(gradeFor(55, 100));
+    expect(gradeFor(low.objectiveScore, low.objectiveMax).label).not.toBe('卓越');
+  });
+
+  it('treats legacy attempts without graded flags as estimates and never renders a tick', () => {
+    const legacy = {
+      id: 'legacy-1',
+      sourceId: 'w-01',
+      section: 'writing',
+      type: 'writing',
+      number: 78,
+      points: 25,
+      earned: 18,
+      tags: ['写作'],
+      difficulty: 2,
+      correct: false,
+    } as QuestionResult;
+    expect(isEstimatedResult(legacy)).toBe(true);
+    const badge = reviewBadge(legacy, true);
+    expect(badge.status).toBe('estimated');
+    expect(badge.label).toContain('估分');
+    expect(badge.icon).toBeNull();
+    expect(isReviewWrong(legacy)).toBe(false);
+
+    const split = attemptScoreSplit({ results: [legacy] } as Parameters<typeof attemptScoreSplit>[0]);
+    expect(split.subjectiveEstimate).toBe(18);
+    expect(split.subjectiveMax).toBe(25);
+    expect(split.objectiveMax).toBe(0);
+
+    const legacyObjective = { ...legacy, id: 'legacy-2', section: 'reading', type: 'mcq', points: 2, earned: 0 } as QuestionResult;
+    expect(isEstimatedResult(legacyObjective)).toBe(false);
+    expect(reviewBadge(legacyObjective, true).icon).toBe('cross');
+    expect(isReviewWrong(legacyObjective)).toBe(true);
+  });
+
+  it('never lets a high subjective estimate lift the objective rating advice', () => {
+    const paper = generatePaper({ mode: 'full', seed: 3 });
+    const writingResult = {
+      id: 'q1',
+      sourceId: 'w-01',
+      section: 'writing',
+      type: 'writing',
+      number: 78,
+      points: 25,
+      earned: 12,
+      tags: ['写作'],
+      difficulty: 2,
+      graded: 'estimated',
+    } as QuestionResult;
+    const writingSection = {
+      id: 'writing',
+      name: '指导性写作',
+      en: 'Guided Writing',
+      score: 12,
+      max: 25,
+      correct: 0,
+      total: 1,
+      scoreRate: 0.48,
+      accuracy: 0.48,
+      tagStats: [],
+    } as SectionResult;
+    const suggestions = buildSuggestions({
+      results: [writingResult],
+      sectionResults: [writingSection],
+      tagStats: [],
+      timeBySection: {},
+      objectiveScore: 60,
+      objectiveMax: 100,
+      subjectiveEstimate: 45,
+      subjectiveMax: 50,
+      paper,
+      unanswered: 0,
+    });
+    expect(suggestions.some((s) => s.title.includes('冲击高分'))).toBe(false);
+    const writingSuggestion = suggestions.find((s) => s.section === 'writing');
+    expect(writingSuggestion?.detail).toContain('估分');
+    expect(writingSuggestion?.detail).toContain('不参与评级');
   });
 });

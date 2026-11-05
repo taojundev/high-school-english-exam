@@ -815,6 +815,13 @@ svg {
   font-size: 0.76rem;
 }
 
+.hero-estimate-note {
+  margin: 10px 0 0;
+  color: rgba(246, 239, 226, 0.72);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
 .hero-mini-bars {
   display: grid;
   gap: 10px;
@@ -1367,7 +1374,9 @@ svg {
 
 .recent-meta {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
+  gap: 4px 10px;
   margin-top: 12px;
   color: var(--muted);
   font-size: 0.72rem;
@@ -2823,6 +2832,10 @@ svg {
   border-left-color: var(--gold);
 }
 
+.review-item.status-estimated {
+  border-left-color: var(--gold);
+}
+
 .review-head {
   display: flex;
   align-items: flex-start;
@@ -2898,6 +2911,11 @@ svg {
 }
 
 .status-badge.blank {
+  background: var(--gold-soft);
+  color: #7b581d;
+}
+
+.status-badge.estimated {
   background: var(--gold-soft);
   color: #7b581d;
 }

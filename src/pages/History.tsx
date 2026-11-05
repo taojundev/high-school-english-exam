@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, Chart, Trash } from '../components/Icons';
 import { EmptyState, Pill, ProgressBar } from '../components/ui';
 import { formatDate, formatDuration, gradeFor } from '../lib/format';
+import { attemptScoreSplit } from '../lib/scoring';
 import { clearAttempts, deleteAttempt, loadAttempts } from '../lib/storage';
 import type { Attempt } from '../types';
 
@@ -11,7 +12,10 @@ export default function HistoryPage() {
 
   const stats = useMemo(() => {
     if (attempts.length === 0) return { avg: 0, best: 0, time: 0 };
-    const ratios = attempts.map((a) => (a.maxScore ? a.totalScore / a.maxScore : 0));
+    const ratios = attempts.map((a) => {
+      const split = attemptScoreSplit(a);
+      return split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
+    });
     return {
       avg: ratios.reduce((n, r) => n + r, 0) / ratios.length,
       best: Math.max(...ratios),
@@ -102,8 +106,9 @@ export default function HistoryPage() {
         </div>
         <div className="history-list">
           {attempts.map((attempt) => {
-            const ratio = attempt.maxScore ? attempt.totalScore / attempt.maxScore : 0;
-            const grade = gradeFor(ratio);
+            const split = attemptScoreSplit(attempt);
+            const ratio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
+            const grade = gradeFor(split.objectiveScore, split.objectiveMax);
             return (
               <article className="history-card" key={attempt.id}>
                 <div className="history-main">
@@ -125,6 +130,7 @@ export default function HistoryPage() {
                     ))}
                   </div>
                   <div className="history-meta">
+                    <span>主观估分 {split.subjectiveEstimate}/{split.subjectiveMax}（不参与评级）</span>
                     <span>用时 {formatDuration(attempt.durationUsedSec)}</span>
                     <span>已答 {attempt.results.filter((r) => (attempt.answers[r.id] ?? '').trim()).length}/{attempt.results.length}</span>
                     <span>种子 {attempt.paper.seed}</span>
@@ -132,8 +138,8 @@ export default function HistoryPage() {
                 </div>
                 <div className="history-side">
                   <div className="history-score">
-                    <strong>{attempt.totalScore}</strong>
-                    <span>/ {attempt.maxScore}</span>
+                    <strong>{split.objectiveScore}</strong>
+                    <span>/ {split.objectiveMax}</span>
                   </div>
                   <div className="history-actions">
                     <Link to={`/result/${attempt.id}`} className="btn btn-primary btn-sm">
@@ -170,10 +176,11 @@ function TrendChart({ attempts }: { attempts: Attempt[] }) {
   const innerW = width - padX * 2;
   const innerH = height - padY * 2;
   const points = ordered.map((attempt, index) => {
-    const ratio = attempt.maxScore ? attempt.totalScore / attempt.maxScore : 0;
+    const split = attemptScoreSplit(attempt);
+    const ratio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
     const x = ordered.length === 1 ? width / 2 : padX + (index / (ordered.length - 1)) * innerW;
     const y = padY + (1 - ratio) * innerH;
-    return { x, y, ratio, attempt };
+    return { x, y, ratio, attempt, split };
   });
   const path = points.map((p) => `${p.x},${p.y}`).join(' ');
 
@@ -199,7 +206,8 @@ function TrendChart({ attempts }: { attempts: Attempt[] }) {
           <g key={point.attempt.id}>
             <circle cx={point.x} cy={point.y} r={5} className="trend-dot" />
             <title>
-              {formatDate(point.attempt.submittedAt)} · {point.attempt.totalScore}/{point.attempt.maxScore}
+              {formatDate(point.attempt.submittedAt)} · 客观题 {point.split.objectiveScore}/{point.split.objectiveMax} · 主观估分{' '}
+              {point.split.subjectiveEstimate}/{point.split.subjectiveMax}
             </title>
           </g>
         ))}

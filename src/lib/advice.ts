@@ -268,14 +268,31 @@ export interface AdviceInput {
   sectionResults: SectionResult[];
   tagStats: TagStat[];
   timeBySection: Partial<Record<SectionId, number>>;
-  totalScore: number;
-  maxScore: number;
+  /** Real objective marks. Rating-like conclusions must use these two, never the subjective estimate. */
+  objectiveScore: number;
+  objectiveMax: number;
+  /** Rough subjective estimate; may drive practice advice, never a grade conclusion. */
+  subjectiveEstimate: number;
+  subjectiveMax: number;
   paper: Paper;
   unanswered: number;
 }
 
+const ESTIMATED_SECTIONS = new Set<SectionId>(['translation', 'summary', 'writing']);
+
 export function buildSuggestions(input: AdviceInput): Suggestion[] {
-  const { results, sectionResults, tagStats, timeBySection, totalScore, maxScore, paper, unanswered } = input;
+  const {
+    results,
+    sectionResults,
+    tagStats,
+    timeBySection,
+    objectiveScore,
+    objectiveMax,
+    subjectiveEstimate,
+    subjectiveMax,
+    paper,
+    unanswered,
+  } = input;
   const suggestions: Suggestion[] = [];
   const titles = new Set<string>();
 
@@ -297,10 +314,11 @@ export function buildSuggestions(input: AdviceInput): Suggestion[] {
 
   for (const tag of weakTags) {
     const entry = TAG_ADVICE[tag.tag] ?? SECTION_ADVICE[tag.section];
+    const estimated = ESTIMATED_SECTIONS.has(tag.section);
     add({
       priority: priorityFor(tag.accuracy),
       title: entry.title,
-      detail: `${entry.detail}（本项得分率 ${Math.round(tag.accuracy * 100)}%）`,
+      detail: `${entry.detail}（本项${estimated ? '估分' : ''}得分率 ${Math.round(tag.accuracy * 100)}%${estimated ? '，估分不参与评级' : ''}）`,
       action: entry.action,
       section: tag.section,
       tag: tag.tag,
@@ -320,10 +338,11 @@ export function buildSuggestions(input: AdviceInput): Suggestion[] {
     if (suggestions.length >= 5) break;
     if (suggestions.some((s) => s.section === section.id)) continue;
     const entry = SECTION_ADVICE[section.id];
+    const estimated = ESTIMATED_SECTIONS.has(section.id);
     add({
       priority: priorityFor(rateOf(section)),
       title: entry.title,
-      detail: `${entry.detail}（本节 ${section.score}/${section.max}，得分率 ${Math.round(rateOf(section) * 100)}%）`,
+      detail: `${entry.detail}（本节${estimated ? '估分' : ''} ${section.score}/${section.max}，${estimated ? '估分不参与评级，仅作练习参考' : `得分率 ${Math.round(rateOf(section) * 100)}%`}）`,
       action: entry.action,
       section: section.id,
     });
@@ -353,17 +372,20 @@ export function buildSuggestions(input: AdviceInput): Suggestion[] {
     });
   }
 
-  const ratio = maxScore > 0 ? totalScore / maxScore : 0;
+  // Grade-shaped advice may only look at objective marks; the estimate never upgrades it.
+  const ratio = objectiveMax > 0 ? objectiveScore / objectiveMax : 0;
   const subjective = results.filter(
     (r) => r.type === 'translation' || r.type === 'summary' || r.type === 'writing',
   );
   const subjectiveHealthy = subjective.every((r) => r.points > 0 && r.earned / r.points >= 0.7);
   // Never tell a student with a weak translation/summary/essay to simply "aim higher".
   if (ratio >= 0.88 && subjectiveHealthy) {
+    const estimateNote =
+      subjectiveMax > 0 ? `主观题估分 ${subjectiveEstimate}/${subjectiveMax}，估分不参与评级。` : '';
     add({
       priority: 'low',
       title: '冲击高分：把“会做”变成“稳拿”',
-      detail: `当前得分率 ${Math.round(ratio * 100)}%，已经具备较强基础。下一步重点是减少非知识性失分：拼写、单复数、时态和书写规范。`,
+      detail: `客观题得分率 ${Math.round(ratio * 100)}%，已经具备较强基础。${estimateNote}下一步重点是减少非知识性失分：拼写、单复数、时态和书写规范。`,
       action: '重做本次错题并逐题写“失分原因”，一周后再做一套全卷验证稳定性。',
     });
   }
