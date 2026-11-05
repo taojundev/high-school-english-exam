@@ -97,6 +97,18 @@ describe('generatePaper', () => {
     expect(avg).toBeGreaterThan(1.9);
   });
 
+  it('reproduces the same paper from the stored seed and difficulty', () => {
+    const original = generatePaper({ mode: 'full', seed: 42, difficulty: 'basic' });
+    expect(original.difficulty).toBe('basic');
+    const replay = generatePaper({ mode: original.mode, seed: original.seed, difficulty: original.difficulty });
+    expect(paperSourceIds(replay)).toEqual(paperSourceIds(original));
+    expect(replay.questions.map((q) => q.id)).toEqual(original.questions.map((q) => q.id));
+
+    // Without the difficulty the paper really is different: the stored field is what makes replay work.
+    const withoutDifficulty = generatePaper({ mode: original.mode, seed: original.seed });
+    expect(paperSourceIds(withoutDifficulty)).not.toEqual(paperSourceIds(original));
+  });
+
   it('avoids recently seen source ids when possible', () => {
     const first = generatePaper({ mode: 'section', section: 'reading', seed: 5 });
     const seen = first.questions.map((q) => q.sourceId);

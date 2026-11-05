@@ -4,8 +4,8 @@ import { ArrowLeft, ArrowRight, Printer, Spark, Target } from '../components/Ico
 import { EmptyState, Pill, ProgressBar, ScoreRing } from '../components/ui';
 import { generatePaper } from '../lib/exam';
 import { formatClock, formatDate, formatDuration, gradeFor, percent } from '../lib/format';
-import { clearActive, getAttempt, loadActive, loadSeen, saveActive } from '../lib/storage';
-import type { Attempt, SectionId } from '../types';
+import { clearActive, getAttempt, loadActive, loadSeenHistory, saveActive } from '../lib/storage';
+import type { Attempt, Paper, SectionId } from '../types';
 
 const priorityLabel = { high: '优先补', medium: '建议练', low: '再巩固' } as const;
 
@@ -54,7 +54,7 @@ export default function ResultPage() {
 
   const startSection = (section: SectionId) => {
     if (!guardActive()) return;
-    const next = generatePaper({ mode: 'section', section, seenIds: loadSeen() });
+    const next = generatePaper({ mode: 'section', section, seenIds: loadSeenHistory() });
     const first = next.sections[0].id;
     const draft = {
       paper: next,
@@ -75,13 +75,15 @@ export default function ResultPage() {
     navigate(`/exam/${next.id}`);
   };
 
-  const startPaper = (seed?: number) => {
+  const startPaper = (options: { seed?: number; difficulty?: Paper['difficulty'] } = {}) => {
     if (!guardActive()) return;
+    const { seed, difficulty } = options;
     const next = generatePaper({
       mode: paper.mode,
       section: paper.mode === 'section' ? paper.sectionFilter ?? paper.sections[0].id : undefined,
+      difficulty,
       // A fixed seed is meant to reproduce the paper exactly, so do not filter seen ids.
-      seenIds: seed === undefined ? loadSeen() : [],
+      seenIds: seed === undefined ? loadSeenHistory() : [],
       seed,
     });
     const draft = {
@@ -104,7 +106,7 @@ export default function ResultPage() {
   };
 
   const startFull = () => startPaper();
-  const replaySeed = () => startPaper(paper.seed);
+  const replaySeed = () => startPaper({ seed: paper.seed, difficulty: paper.difficulty });
 
   return (
     <div className="container result-page">
@@ -236,7 +238,11 @@ export default function ResultPage() {
                   <span
                     key={`${tag.section}-${tag.tag}`}
                     className={tag.accuracy < 0.5 ? 'tag-chip bad' : 'tag-chip warn'}
-                    title={`${tag.correct}/${tag.total} 正确`}
+                    title={
+                      tag.section === 'translation' || tag.section === 'summary' || tag.section === 'writing'
+                        ? `得分 ${tag.earned ?? 0}/${tag.points ?? 0}`
+                        : `${tag.correct}/${tag.total} 正确`
+                    }
                   >
                     {tag.tag}
                     <em>{Math.round(tag.accuracy * 100)}%</em>

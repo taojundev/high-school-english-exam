@@ -42,6 +42,136 @@ function paperWith(questions: Omit<ExamQuestion, 'id' | 'number'>[], contexts: P
   };
 }
 
+function translationPaper(item: (typeof BANK.translation)[number]): Paper {
+  return paperWith([
+    {
+      sourceId: item.id,
+      section: 'translation',
+      type: 'translation',
+      points: 3,
+      difficulty: item.difficulty,
+      tags: item.tags,
+      groupId: `tr-${item.id}`,
+      stem: item.chinese,
+      reference: item.reference,
+      keyPoints: item.keyPoints,
+      tips: item.tips,
+    },
+  ]);
+}
+
+const TEST_FUNCTION_WORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'this',
+  'that',
+  'these',
+  'those',
+  'it',
+  'its',
+  'they',
+  'them',
+  'their',
+  'i',
+  'me',
+  'my',
+  'we',
+  'us',
+  'our',
+  'you',
+  'your',
+  'he',
+  'him',
+  'his',
+  'she',
+  'her',
+  'of',
+  'to',
+  'in',
+  'on',
+  'at',
+  'by',
+  'for',
+  'with',
+  'about',
+  'into',
+  'from',
+  'as',
+  'than',
+  'and',
+  'or',
+  'but',
+  'so',
+  'if',
+  'when',
+  'while',
+  'because',
+  'although',
+  'though',
+  'is',
+  'am',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'do',
+  'does',
+  'did',
+  'can',
+  'could',
+  'will',
+  'would',
+  'shall',
+  'should',
+  'may',
+  'might',
+  'must',
+  'has',
+  'have',
+  'had',
+  'not',
+  'no',
+  'very',
+  'more',
+  'most',
+  'also',
+  'there',
+  'here',
+]);
+
+const tokenize = (text: string) => text.match(/[A-Za-z0-9][A-Za-z0-9'’\-]*/g) ?? [];
+
+/** First key-point keyword plus the next 1..3 function words of the reference. */
+function truncatedVariants(reference: string, patterns: string[]): string[] {
+  const words = tokenize(reference);
+  let start = 0;
+  let end = 0;
+  for (const pattern of patterns) {
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, 'i');
+    } catch {
+      continue;
+    }
+    const match = regex.exec(reference);
+    if (!match) continue;
+    start = tokenize(reference.slice(0, match.index)).length;
+    end = start + Math.max(0, tokenize(match[0]).length - 1);
+    break;
+  }
+  const base = words.slice(start, end + 1);
+  return [1, 2, 3].map((wanted) => {
+    const extra: string[] = [];
+    for (let i = end + 1; i < words.length && extra.length < wanted; i++) {
+      if (TEST_FUNCTION_WORDS.has(words[i].toLowerCase().replace(/’/g, "'"))) extra.push(words[i]);
+    }
+    return [...base, ...extra].join(' ');
+  });
+}
+
 function perfectAnswers(paper: Paper): Record<string, string> {
   const answers: Record<string, string> = {};
   for (const q of paper.questions) {
@@ -160,6 +290,47 @@ describe('scoring', () => {
     expect(full.correct).toBe(true);
   });
 
+  it('caps a padded counterexample translation', () => {
+    // Warden's counterexample: keyword list plus two function words used to earn 3/3.
+    const item = BANK.translation[0];
+    const result = scoreAttempt(translationPaper(item), { q1: 'seeing volunteer moved the teacher' }, meta()).results[0];
+    expect(result.earned).toBeLessThanOrEqual(1);
+    expect(result.correct).toBe(false);
+    expect(result.lowConfidence).toBe(true);
+  });
+
+  it('never lets a truncated keyword variant pass as a translation', () => {
+    for (const item of BANK.translation) {
+      const paper = translationPaper(item);
+      for (const variant of truncatedVariants(item.reference, item.keyPoints[0].patterns)) {
+        const result = scoreAttempt(paper, { q1: variant }, meta()).results[0];
+        expect(result.earned, `${item.id}: "${variant}"`).toBeLessThanOrEqual(1);
+        expect(result.correct, `${item.id}: "${variant}"`).toBe(false);
+        expect(result.lowConfidence, `${item.id}: "${variant}"`).toBe(true);
+      }
+    }
+  });
+
+  it('still gives every bank reference translation full marks', () => {
+    for (const item of BANK.translation) {
+      const result = scoreAttempt(translationPaper(item), { q1: item.reference }, meta()).results[0];
+      expect(result.earned, item.id).toBe(3);
+      expect(result.correct, item.id).toBe(true);
+      expect(result.lowConfidence, item.id).toBe(false);
+    }
+  });
+
+  it('keeps a reasonable 8-10 word rewrite near full marks', () => {
+    const item = BANK.translation[0];
+    const rewrite = 'Seeing students volunteer for community service, the teacher was moved.';
+    expect(countWords(rewrite)).toBeGreaterThanOrEqual(8);
+    expect(countWords(rewrite)).toBeLessThanOrEqual(10);
+    const result = scoreAttempt(translationPaper(item), { q1: rewrite }, meta()).results[0];
+    expect(result.earned).toBe(3);
+    expect(result.correct).toBe(true);
+    expect(result.lowConfidence).toBe(false);
+  });
+
   it('caps a pasted summary and refuses to call it complete', () => {
     const item = BANK.summary[0];
     const paper = paperWith(
@@ -193,8 +364,72 @@ describe('scoring', () => {
     expect(pasted.feedback).not.toContain('要点较完整');
   });
 
+  it('does not accept a 46-word keyword checklist as a summary', () => {
+    const item = BANK.summary[0];
+    const checklist =
+      'bike sharing and the spread because it is convenient with cheap in the green but the traffic and the pollution then park and damage and block the rules and the accident so the company with the parking and the together so the responsibility and the company';
+    expect(countWords(checklist)).toBe(46);
+    const paper = paperWith(
+      [
+        {
+          sourceId: item.id,
+          section: 'summary',
+          type: 'summary',
+          points: 10,
+          difficulty: item.difficulty,
+          tags: ['概要写作'],
+          groupId: `summary-${item.id}`,
+          stem: item.prompt,
+          reference: item.sample,
+          sample: item.sample,
+          keyPoints: item.keyPoints,
+          minWords: item.minWords,
+          maxWords: item.maxWords,
+          tips: item.tips,
+        },
+      ],
+      { [`summary-${item.id}`]: { kind: 'passage', title: item.title, text: item.text } },
+    );
+    const result = scoreAttempt(paper, { q1: checklist }, meta()).results[0];
+    expect(result.covered?.every((c) => c.ok)).toBe(true);
+    expect(result.earned).toBeLessThanOrEqual(6);
+    expect(result.correct).toBe(false);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.feedback).not.toContain('要点较完整');
+  });
+
+  it('keeps every bank summary sample at full marks', () => {
+    for (const item of BANK.summary) {
+      const paper = paperWith(
+        [
+          {
+            sourceId: item.id,
+            section: 'summary',
+            type: 'summary',
+            points: 10,
+            difficulty: item.difficulty,
+            tags: ['概要写作'],
+            groupId: `summary-${item.id}`,
+            stem: item.prompt,
+            reference: item.sample,
+            sample: item.sample,
+            keyPoints: item.keyPoints,
+            minWords: item.minWords,
+            maxWords: item.maxWords,
+            tips: item.tips,
+          },
+        ],
+        { [`summary-${item.id}`]: { kind: 'passage', title: item.title, text: item.text } },
+      );
+      const result = scoreAttempt(paper, { q1: item.sample }, meta()).results[0];
+      expect(result.earned, item.id).toBeGreaterThanOrEqual(9);
+      expect(result.correct, item.id).toBe(true);
+    }
+  });
+
   it('caps content and never marks a four-word essay correct', () => {
-    const item = BANK.writing[0];
+    // w-06 is the case where the keyword list really covers 4/4, so only the content cap can stop it.
+    const item = BANK.writing[5];
     const paper = paperWith([
       {
         sourceId: item.id,
@@ -216,7 +451,10 @@ describe('scoring', () => {
     ]);
     const attempt = scoreAttempt(paper, { q1: 'bund morning history remember' }, meta());
     const writing = attempt.results[0];
-    expect(writing.earned).toBeLessThan(10);
+    // Guard against a vacuous test: the keyword list must actually hit the content points.
+    expect(writing.covered?.filter((c) => c.ok).length ?? 0).toBeGreaterThan(0);
+    expect(writing.covered?.filter((c) => c.ok).length).toBe(item.keyPoints.length);
+    expect(writing.earned).toBeLessThanOrEqual(5);
     expect(writing.correct).toBe(false);
     expect(writing.lowConfidence).toBe(true);
     expect(writing.feedback).toContain('低置信度初评');

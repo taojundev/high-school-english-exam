@@ -102,7 +102,13 @@ export default function ExamPage() {
     const attempt = scoreAttempt(settled.paper, settled.answers, {
       startedAt: settled.startedAt,
       submittedAt: new Date().toISOString(),
-      durationUsedSec: Math.max(0, Math.round((nowMs - new Date(settled.startedAt).getTime()) / 1000)),
+      // Same clamp as timeBySection: a tab left open past the deadline cannot inflate the total.
+      durationUsedSec: Math.max(
+        0,
+        Math.round(
+          (Math.min(nowMs, examDeadline(settled)) - new Date(settled.startedAt).getTime()) / 1000,
+        ),
+      ),
       timeBySection: settled.timeBySection,
       transcriptReveals: settled.transcriptReveals,
       replayCounts: settled.replayCounts,

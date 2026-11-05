@@ -93,15 +93,31 @@ test.describe('Shanghai English mock exam', () => {
     await page.getByRole('button', { name: /确认交卷/ }).click();
     await expect(page).toHaveURL(/\/#\/result\//);
 
-    const total = await page.evaluate(() => {
+    const attempt = await page.evaluate(() => {
       const raw = localStorage.getItem('sh-exam.attempts.v1');
       if (!raw) throw new Error('missing attempts');
       const list = JSON.parse(raw);
-      return list[0].timeBySection.listening ?? 0;
+      return {
+        listening: list[0].timeBySection.listening ?? 0,
+        timeBySection: list[0].timeBySection as Record<string, number>,
+        durationUsedSec: list[0].durationUsedSec as number,
+        durationMin: list[0].paper.durationMin as number,
+      };
     });
+    const total = attempt.listening;
     // 3s before save + 2s after resume; no offline gap, no double counting.
     expect(total).toBeGreaterThanOrEqual(5);
     expect(total).toBeLessThan(10);
+
+    // Section times must never go negative, and the total must respect the exam deadline.
+    for (const seconds of Object.values(attempt.timeBySection)) {
+      expect(seconds).toBeGreaterThanOrEqual(0);
+    }
+    expect(attempt.durationUsedSec).toBeGreaterThanOrEqual(0);
+    expect(attempt.durationUsedSec).toBeLessThanOrEqual(attempt.durationMin * 60);
+    expect(
+      Object.values(attempt.timeBySection).reduce((sum, seconds) => sum + seconds, 0),
+    ).toBeLessThanOrEqual(attempt.durationUsedSec + 1);
   });
 
   test('auto-submits when the timer has expired', async ({ page }) => {

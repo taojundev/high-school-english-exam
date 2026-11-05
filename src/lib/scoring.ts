@@ -54,6 +54,181 @@ export function keyPointCoverage(text: string, points: KeyPoint[] | undefined): 
   });
 }
 
+interface Hit {
+  label: string;
+  ok: boolean;
+  /** Token index ranges (inclusive) where the key point matched. */
+  spans: Array<[number, number]>;
+}
+
+const TOKEN_RE = /[a-z0-9][a-z0-9'\-]*/g;
+
+/** Key point coverage that also records which tokens matched, so callers can judge structure. */
+function keyPointHits(text: string, points: KeyPoint[] | undefined): Hit[] {
+  const normalized = normalizeText(text);
+  const starts: number[] = [];
+  TOKEN_RE.lastIndex = 0;
+  for (let match = TOKEN_RE.exec(normalized); match; match = TOKEN_RE.exec(normalized)) {
+    starts.push(match.index);
+  }
+  const tokenAt = (offset: number) => {
+    let index = 0;
+    for (let i = 0; i < starts.length; i++) {
+      if (starts[i] <= offset) index = i;
+      else break;
+    }
+    return index;
+  };
+  return (points ?? []).map((point) => {
+    const spans: Array<[number, number]> = [];
+    for (const pattern of point.patterns) {
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, 'gi');
+      } catch {
+        const lower = pattern.toLowerCase();
+        let at = normalized.indexOf(lower);
+        while (at !== -1) {
+          spans.push([tokenAt(at), tokenAt(at + lower.length - 1)]);
+          at = normalized.indexOf(lower, at + lower.length);
+        }
+        continue;
+      }
+      for (let match = regex.exec(normalized); match; match = regex.exec(normalized)) {
+        if (!match[0].length) {
+          regex.lastIndex += 1;
+          continue;
+        }
+        spans.push([tokenAt(match.index), tokenAt(match.index + match[0].length - 1)]);
+      }
+    }
+    return { label: point.label, ok: spans.length > 0, spans };
+  });
+}
+
+const AUX_AND_IRREGULAR = new Set([
+  'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'has', 'have', 'had', 'do', 'does', 'did',
+  'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must', 'ought',
+  'became', 'came', 'felt', 'fell', 'found', 'gave', 'got', 'grew', 'heard', 'held',
+  'kept', 'knew', 'lay', 'led', 'left', 'lost', 'made', 'meant', 'met', 'paid', 'ran',
+  'said', 'saw', 'sent', 'set', 'spoke', 'spent', 'stood', 'took', 'told', 'thought',
+  'understood', 'went', 'wore', 'won', 'wrote', 'ate', 'bought', 'brought', 'built',
+  'caught', 'chose', 'drove', 'fought', 'hit', 'hurt', 'read', 'rode', 'rose', 'sold',
+  'slept', 'taught', 'threw', 'woke',
+]);
+
+const FUNCTION_WORDS = new Set([
+  'a', 'an', 'the', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their',
+  'i', 'me', 'my', 'we', 'us', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her',
+  'of', 'to', 'in', 'on', 'at', 'by', 'for', 'with', 'about', 'into', 'from', 'as', 'than',
+  'and', 'or', 'but', 'so', 'if', 'when', 'while', 'because', 'although', 'though', 'that',
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being', 'do', 'does', 'did',
+  'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+  'has', 'have', 'had', 'not', 'no', 'very', 'more', 'most', 'also', 'there', 'here',
+]);
+
+const VERB_BASES = new Set([
+  'act', 'add', 'advise', 'affect', 'agree', 'allow', 'apply', 'argue', 'ask', 'attend',
+  'avoid', 'become', 'begin', 'believe', 'block', 'bring', 'build', 'buy', 'call', 'catch',
+  'cause', 'change', 'choose', 'close', 'combine', 'come', 'communicate', 'compare', 'complain',
+  'compete', 'consider', 'continue', 'cover', 'create', 'cut', 'decide', 'decrease', 'describe',
+  'design', 'develop', 'die', 'discuss', 'divide', 'drive', 'eat', 'encourage', 'end', 'enjoy',
+  'exercise', 'exist', 'expect', 'explain', 'fall', 'feel', 'fight', 'find', 'finish', 'fix',
+  'follow', 'forget', 'get', 'give', 'go', 'grow', 'hand', 'happen', 'hate', 'hear', 'help',
+  'hold', 'hope', 'ignore', 'imagine', 'improve', 'include', 'increase', 'introduce', 'join',
+  'keep', 'know', 'lead', 'learn', 'leave', 'let', 'lie', 'like', 'limit', 'live', 'look',
+  'lose', 'make', 'matter', 'mean', 'meet', 'move', 'need', 'note', 'occur', 'offer', 'open',
+  'operate', 'pass', 'pay', 'plan', 'play', 'postpone', 'practise', 'prefer', 'prepare',
+  'present', 'prevent', 'produce', 'protect', 'provide', 'put', 'raise', 'reach', 'read',
+  'realize', 'receive', 'recommend', 'reduce', 'refuse', 'release', 'remain', 'remember',
+  'remove', 'repair', 'report', 'require', 'respect', 'respond', 'return', 'ride', 'rise',
+  'run', 'say', 'see', 'seem', 'sell', 'send', 'share', 'show', 'sit', 'sleep', 'sound',
+  'speak', 'spend', 'spread', 'stand', 'start', 'stay', 'stop', 'study', 'succeed', 'suggest',
+  'support', 'survive', 'take', 'talk', 'teach', 'tell', 'thank', 'think', 'touch', 'travel',
+  'try', 'turn', 'understand', 'use', 'visit', 'wait', 'walk', 'want', 'warn', 'wear',
+  'welcome', 'win', 'wonder', 'work', 'worry', 'write',
+]);
+
+function baseForms(token: string): string[] {
+  const forms = [token];
+  const add = (value: string) => {
+    if (!value) return;
+    forms.push(value);
+    if (/([b-df-hj-np-tv-z])\1$/.test(value)) forms.push(value.slice(0, -1));
+  };
+  if (token.endsWith('ies')) add(`${token.slice(0, -3)}y`);
+  if (token.endsWith('es')) add(token.slice(0, -2));
+  if (token.endsWith('s')) add(token.slice(0, -1));
+  if (token.endsWith('ing')) {
+    add(token.slice(0, -3));
+    add(`${token.slice(0, -3)}e`);
+  }
+  if (token.endsWith('ed')) {
+    add(token.slice(0, -2));
+    add(token.slice(0, -1));
+  }
+  return forms;
+}
+
+function isVerbish(token: string): boolean {
+  if (AUX_AND_IRREGULAR.has(token)) return true;
+  if (FUNCTION_WORDS.has(token)) return false;
+  if (VERB_BASES.has(token)) return true;
+  return baseForms(token).some((form) => VERB_BASES.has(form));
+}
+
+interface ClauseShape {
+  /** At least one sentence is long enough to be a real S-V(-O) clause. */
+  clause: boolean;
+  /** Covered key points only appear inside one short window of a longer answer. */
+  crammed: boolean;
+  /** Number of sentences that contain at least one covered key point. */
+  spread: number;
+}
+
+const CRAM_WINDOW = 5;
+
+function clauseShape(raw: string, hits: Hit[]): ClauseShape {
+  const sentences = splitSentences(raw);
+  const clause = sentences.some((sentence) => {
+    const tokens = normalizeText(sentence).match(TOKEN_RE) ?? [];
+    return tokens.length >= 6 && tokens.some(isVerbish);
+  });
+  const hitTokens: number[] = [];
+  for (const hit of hits) {
+    if (!hit.ok) continue;
+    for (const [start, end] of hit.spans) {
+      hitTokens.push(start, end);
+    }
+  }
+  const window = hitTokens.length ? Math.max(...hitTokens) - Math.min(...hitTokens) + 1 : Number.POSITIVE_INFINITY;
+  const words = countWords(raw);
+  // Points squeezed into one short phrase of an otherwise longer answer are keyword stuffing,
+  // not a translation. A short answer (<= window + 4 words) cannot help clustering them.
+  const coveredCount = hits.filter((hit) => hit.ok).length;
+  const crammed =
+    coveredCount >= 2 && hitTokens.length > 0 && window <= CRAM_WINDOW && words > window + 4;
+  const pointSentences = new Set<number>();
+  for (const hit of hits) {
+    if (!hit.ok) continue;
+    for (const [start] of hit.spans) {
+      let offset = 0;
+      let seen = 0;
+      for (const sentence of sentences) {
+        const count = (normalizeText(sentence).match(TOKEN_RE) ?? []).length;
+        if (start >= offset && start < offset + count) {
+          pointSentences.add(seen);
+          break;
+        }
+        offset += count;
+        seen += 1;
+      }
+    }
+  }
+  return { clause, crammed, spread: pointSentences.size };
+}
+
 function matchesObjective(question: { type: string; answerText?: string; accept?: string[] }, raw: string) {
   if (!raw.trim() || !question.answerText) return false;
   const user = normalizeAnswer(raw);
@@ -117,29 +292,35 @@ function mechanicsScore(text: string): number {
 function scoreTranslation(question: Paper['questions'][number], raw: string) {
   const words = countWords(raw);
   const referenceWords = countWords(question.reference ?? '');
-  const minWords = Math.max(4, Math.ceil(referenceWords * 0.35));
+  // Longer answers are required: a keyword plus a couple of function words is not a translation.
+  const minWords = Math.max(6, Math.ceil(referenceWords * 0.6));
   const maxWords = Math.max(minWords + 4, Math.ceil(referenceWords * 2.5));
-  const covered = keyPointCoverage(raw, question.keyPoints);
+  const hits = keyPointHits(raw, question.keyPoints);
+  const covered = hits.map((hit) => ({ label: hit.label, ok: hit.ok }));
   const coveredCount = covered.filter((c) => c.ok).length;
   const total = covered.length || 1;
-  const sentences = splitSentences(raw);
-  const hasStructure = sentences.some((sentence) => countWords(sentence) >= 4);
+  const shape = clauseShape(raw, hits);
+  const hasStructure = shape.clause && !shape.crammed;
   const tooShort = words > 0 && words < minWords;
   const tooLong = words > maxWords;
 
   let contentRatio = coveredCount / total;
-  // Keyword lists ("seeing volunteer moved") are not a translation: no full coverage without a sentence.
+  // Keyword lists ("seeing volunteer moved") are not a translation: no full coverage without a clause.
   if (!hasStructure) contentRatio = Math.min(contentRatio, 0.5);
   if (tooShort) contentRatio = Math.min(contentRatio, 0.4);
   if (tooLong) contentRatio = Math.min(contentRatio, 0.8);
-  const earned = raw.trim() ? roundHalf(contentRatio * question.points) : 0;
+  let earned = raw.trim() ? roundHalf(contentRatio * question.points) : 0;
+  // Missing length or clause quality caps the content item at 1 point, whatever the coverage.
+  if (raw.trim() && (tooShort || !hasStructure)) earned = Math.min(earned, 1);
   const missing = covered.filter((c) => !c.ok).map((c) => c.label);
   const lowConfidence = Boolean(raw.trim()) && (!hasStructure || tooShort || tooLong);
-  const reason = !hasStructure
+  const reason = !shape.clause
     ? '当前作答缺少完整句子，只能按关键词粗略初评'
-    : tooShort
-      ? `当前 ${words} 词明显少于参考译文的 ${referenceWords} 词`
-      : `当前 ${words} 词明显多于参考译文的 ${referenceWords} 词`;
+    : shape.crammed
+      ? '关键信息被压缩在同一个短语里，缺少完整句子支撑，只能按关键词粗略初评'
+      : tooShort
+        ? `当前 ${words} 词明显少于参考译文的 ${referenceWords} 词`
+        : `当前 ${words} 词明显多于参考译文的 ${referenceWords} 词`;
   const feedback = raw.trim()
     ? `关键信息覆盖 ${coveredCount}/${total}${missing.length ? `；待补：${missing.join('、')}` : ''}。${lowConfidence ? `${reason}，以下为低置信度初评。` : '句法与篇幅基本达标。'}自动初评按关键信息给分，最终以人工阅卷为准。`
     : '未作答。先拆分中文句子的主干，再确定时态、语态和连接方式。';
@@ -155,13 +336,21 @@ function scoreTranslation(question: Paper['questions'][number], raw: string) {
 
 function scoreSummary(question: Paper['questions'][number], raw: string, source: string) {
   const words = countWords(raw);
-  const covered = keyPointCoverage(raw, question.keyPoints);
+  const hits = keyPointHits(raw, question.keyPoints);
+  const covered = hits.map((hit) => ({ label: hit.label, ok: hit.ok }));
   const total = covered.length || 1;
   const coveredCount = covered.filter((c) => c.ok).length;
   const min = question.minWords ?? 50;
   const max = question.maxWords ?? 80;
   const sentences = splitSentences(raw);
-  const hasStructure = sentences.some((sentence) => countWords(sentence) >= 5);
+  const hasClause = sentences.some((sentence) => countWords(sentence) >= 5);
+  const shape = clauseShape(raw, hits);
+  // A 46-word keyword list is one run-on "sentence" with every point crammed into it, not a summary.
+  const listLike =
+    sentences.length < 2 ||
+    (sentences.length > 0 && words / sentences.length > 32) ||
+    (coveredCount >= 2 && shape.spread < 2);
+  const hasStructure = hasClause && !shape.crammed && !listLike;
   const copied = hasLongCopy(raw, source);
   const farTooLong = words > max * 1.25;
   const farTooShort = words > 0 && words < min * 0.8;
@@ -193,9 +382,11 @@ function scoreSummary(question: Paper['questions'][number], raw: string, source:
       ? `当前 ${words} 词远超 ${max} 词上限，覆盖项已封顶，这是低置信度初评。`
       : farTooShort
         ? `当前 ${words} 词明显少于 ${min} 词下限，覆盖项已封顶，这是低置信度初评。`
-        : !hasStructure
-          ? '当前作答没有完整句子，不能按要点完整计分，这是低置信度初评。'
-          : '';
+        : listLike
+          ? `当前作答更像要点清单（${sentences.length} 句、要点集中在 ${shape.spread} 句内），缺少成句概括，覆盖项已封顶，这是低置信度初评。`
+          : !hasStructure
+            ? '当前作答没有完整句子，不能按要点完整计分，这是低置信度初评。'
+            : '';
   const feedback = raw.trim()
     ? `要点覆盖 ${coveredCount}/${total}（${coverageScore.toFixed(1)}/6）；词数 ${words}（${lengthScore}/2）；连贯与压缩 ${expression.toFixed(1)}/2。${missing.length ? `待补要点：${missing.join('、')}。` : copied || farTooLong || farTooShort || !hasStructure ? '' : '要点较完整。'}${confidenceNote}自动初评仅供练习参考。`
     : '未作答。先通读原文，划出主题句和每段关键词，再用自己的话压缩成 3–4 句。';

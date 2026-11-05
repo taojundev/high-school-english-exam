@@ -211,6 +211,8 @@ export interface Paper {
   version: 1;
   id: string;
   seed: number;
+  /** Difficulty filter used to build the paper; needed to reproduce it from its seed. */
+  difficulty?: GenerateOptions['difficulty'];
   createdAt: string;
   mode: ExamMode;
   sectionFilter?: SectionId;

@@ -6,7 +6,7 @@ import { SECTION_META } from '../sections';
 import { bankTotals } from '../data';
 import { generatePaper } from '../lib/exam';
 import { formatDate, formatDuration, gradeFor } from '../lib/format';
-import { clearActive, loadActive, loadAttempts, loadSeen, saveActive } from '../lib/storage';
+import { clearActive, loadActive, loadAttempts, loadSeenHistory, saveActive } from '../lib/storage';
 import type { ActiveDraft, ExamMode, SectionId } from '../types';
 
 const difficultyOptions: { value: 'mixed' | 'basic' | 'advanced'; label: string; note: string }[] = [
@@ -62,7 +62,7 @@ export default function HomePage() {
       section: mode === 'section' ? section : undefined,
       difficulty,
       seed,
-      seenIds: seed === undefined ? loadSeen() : [],
+      seenIds: seed === undefined ? loadSeenHistory() : [],
     });
     const first = paper.sections[0].id;
     const draft: ActiveDraft = {

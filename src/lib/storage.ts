@@ -4,11 +4,13 @@ const KEYS = {
   attempts: 'sh-exam.attempts.v1',
   active: 'sh-exam.active.v1',
   seen: 'sh-exam.seen.v1',
+  review: 'sh-exam.review.v1',
   settings: 'sh-exam.settings.v1',
 };
 
 const MAX_ATTEMPTS = 20;
 const MAX_SEEN = 400;
+const MAX_REVIEW = 2000;
 
 function available(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -84,10 +86,28 @@ export function loadSeen(): string[] {
   return Array.isArray(list) ? list : [];
 }
 
+/** Ids that fell out of the recent-seen window; they still count as practised for review flags. */
+export function loadReview(): string[] {
+  const list = read<string[]>(KEYS.review, []);
+  return Array.isArray(list) ? list : [];
+}
+
+/** Recent and evicted ids in recency order: newest first, evicted ones last. */
+export function loadSeenHistory(): string[] {
+  return [...loadSeen(), ...loadReview()];
+}
+
 export function markSeen(ids: string[]): void {
   const existing = loadSeen();
-  const merged = [...new Set([...ids, ...existing])].slice(0, MAX_SEEN);
-  write(KEYS.seen, merged);
+  const merged = [...new Set([...ids, ...existing])];
+  const kept = merged.slice(0, MAX_SEEN);
+  const evicted = merged.slice(MAX_SEEN);
+  write(KEYS.seen, kept);
+  if (evicted.length > 0) {
+    // Evicted ids move into a persistent review set so they keep their "practised" mark.
+    const review = [...new Set([...loadReview(), ...evicted])].slice(-MAX_REVIEW);
+    write(KEYS.review, review);
+  }
 }
 
 export function loadSettings(): Settings {

@@ -488,6 +488,7 @@ export function generatePaper(options: GenerateOptions): Paper {
     version: 1,
     id: paperId,
     seed,
+    difficulty: options.difficulty,
     createdAt: new Date().toISOString(),
     mode,
     sectionFilter: options.section,
