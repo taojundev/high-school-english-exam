@@ -189,6 +189,25 @@ interface ClauseShape {
 
 const CRAM_WINDOW = 5;
 
+const MIN_CONTENT_DENSITY = 0.4;
+const MIN_PURE_FILLER_DENSITY = 0.25;
+
+/**
+ * A padded answer made of function words ("... the the the") can still pass the word-count gate.
+ * Treat it as low confidence when the content-word share is low and the padding either repeats a
+ * token back to back or leaves almost no content words at all.
+ */
+function isLowContentDensity(text: string): boolean {
+  const tokens = normalizeText(text).match(TOKEN_RE) ?? [];
+  if (!tokens.length) return false;
+  const content = tokens.filter(
+    (token) => !FUNCTION_WORDS.has(token) && !AUX_AND_IRREGULAR.has(token),
+  ).length;
+  const ratio = content / tokens.length;
+  const repeated = tokens.some((token, index) => index > 0 && token === tokens[index - 1]);
+  return ratio < MIN_CONTENT_DENSITY && (repeated || ratio < MIN_PURE_FILLER_DENSITY);
+}
+
 function clauseShape(raw: string, hits: Hit[]): ClauseShape {
   const sentences = splitSentences(raw);
   const clause = sentences.some((sentence) => {
@@ -313,14 +332,18 @@ function scoreTranslation(question: Paper['questions'][number], raw: string) {
   // Missing length or clause quality caps the content item at 1 point, whatever the coverage.
   if (raw.trim() && (tooShort || !hasStructure)) earned = Math.min(earned, 1);
   const missing = covered.filter((c) => !c.ok).map((c) => c.label);
-  const lowConfidence = Boolean(raw.trim()) && (!hasStructure || tooShort || tooLong);
+  // A padded answer can be long enough yet still mostly function words.
+  const lowDensity = Boolean(raw.trim()) && isLowContentDensity(raw);
+  const lowConfidence = Boolean(raw.trim()) && (!hasStructure || tooShort || tooLong || lowDensity);
   const reason = !shape.clause
     ? '当前作答缺少完整句子，只能按关键词粗略初评'
     : shape.crammed
       ? '关键信息被压缩在同一个短语里，缺少完整句子支撑，只能按关键词粗略初评'
       : tooShort
         ? `当前 ${words} 词明显少于参考译文的 ${referenceWords} 词`
-        : `当前 ${words} 词明显多于参考译文的 ${referenceWords} 词`;
+        : tooLong
+          ? `当前 ${words} 词明显多于参考译文的 ${referenceWords} 词`
+          : '实词比例过低，更像虚词填充而非译文';
   const feedback = raw.trim()
     ? `关键信息覆盖 ${coveredCount}/${total}${missing.length ? `；待补：${missing.join('、')}` : ''}。${lowConfidence ? `${reason}，以下为低置信度初评。` : '句法与篇幅基本达标。'}自动初评按关键信息给分，最终以人工阅卷为准。`
     : '未作答。先拆分中文句子的主干，再确定时态、语态和连接方式。';

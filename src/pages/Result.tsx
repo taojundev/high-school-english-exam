@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Printer, Spark, Target } from '../components/Icons';
 import { EmptyState, Pill, ProgressBar, ScoreRing } from '../components/ui';
-import { generatePaper } from '../lib/exam';
+import { generatePaper, paperReplayOptions } from '../lib/exam';
 import { formatClock, formatDate, formatDuration, gradeFor, percent } from '../lib/format';
 import { clearActive, getAttempt, loadActive, loadSeenHistory, saveActive } from '../lib/storage';
-import type { Attempt, Paper, SectionId } from '../types';
+import type { Attempt, GenerateOptions, SectionId } from '../types';
 
 const priorityLabel = { high: '优先补', medium: '建议练', low: '再巩固' } as const;
 
@@ -75,16 +75,12 @@ export default function ResultPage() {
     navigate(`/exam/${next.id}`);
   };
 
-  const startPaper = (options: { seed?: number; difficulty?: Paper['difficulty'] } = {}) => {
+  const startPaper = (options: GenerateOptions = { mode: paper.mode }) => {
     if (!guardActive()) return;
-    const { seed, difficulty } = options;
     const next = generatePaper({
-      mode: paper.mode,
-      section: paper.mode === 'section' ? paper.sectionFilter ?? paper.sections[0].id : undefined,
-      difficulty,
+      ...options,
       // A fixed seed is meant to reproduce the paper exactly, so do not filter seen ids.
-      seenIds: seed === undefined ? loadSeenHistory() : [],
-      seed,
+      seenIds: options.seed === undefined ? loadSeenHistory() : [],
     });
     const draft = {
       paper: next,
@@ -106,7 +102,7 @@ export default function ResultPage() {
   };
 
   const startFull = () => startPaper();
-  const replaySeed = () => startPaper({ seed: paper.seed, difficulty: paper.difficulty });
+  const replaySeed = () => startPaper(paperReplayOptions(paper));
 
   return (
     <div className="container result-page">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BANK } from '../data';
-import { generatePaper, groupQuestions, paperSourceIds } from './exam';
+import { generatePaper, groupQuestions, paperReplayOptions, paperSourceIds } from './exam';
 import type { Paper } from '../types';
 
 const sectionPoints = (paper: Paper) =>
@@ -107,6 +107,21 @@ describe('generatePaper', () => {
     // Without the difficulty the paper really is different: the stored field is what makes replay work.
     const withoutDifficulty = generatePaper({ mode: original.mode, seed: original.seed });
     expect(paperSourceIds(withoutDifficulty)).not.toEqual(paperSourceIds(original));
+  });
+
+  it('rebuilds the stored paper from the result page replay options', () => {
+    const original = generatePaper({ mode: 'full', seed: 42, difficulty: 'basic' });
+    const options = paperReplayOptions(original);
+    expect(options.mode).toBe('full');
+    expect(options.section).toBeUndefined();
+    expect(options.seed).toBe(42);
+    expect(options.difficulty).toBe('basic');
+    const replay = generatePaper(options);
+    expect(replay.difficulty).toBe(original.difficulty);
+    expect(paperSourceIds(replay)).toEqual(paperSourceIds(original));
+
+    const practice = generatePaper({ mode: 'section', section: 'reading', seed: 7 });
+    expect(paperReplayOptions(practice).section).toBe('reading');
   });
 
   it('avoids recently seen source ids when possible', () => {

@@ -128,12 +128,26 @@ test.describe('Shanghai English mock exam', () => {
       const raw = localStorage.getItem('sh-exam.active.v1');
       if (!raw) throw new Error('missing active draft');
       const draft = JSON.parse(raw);
-      draft.startedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      // Three hours ago is past the 120-minute full-paper deadline, so an unclamped total would be 10800s.
+      draft.startedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
       localStorage.setItem('sh-exam.active.v1', JSON.stringify(draft));
     });
     await page.reload();
     await expect(page).toHaveURL(/\/#\/result\//);
     await expect(page.getByText('未作答', { exact: true })).toBeVisible();
+
+    const attempt = await page.evaluate(() => {
+      const raw = localStorage.getItem('sh-exam.attempts.v1');
+      if (!raw) throw new Error('missing attempts');
+      const list = JSON.parse(raw);
+      return {
+        durationUsedSec: list[0].durationUsedSec as number,
+        durationMin: list[0].paper.durationMin as number,
+      };
+    });
+    // The auto-submit must clamp the elapsed time at the exam deadline.
+    expect(attempt.durationUsedSec).toBeGreaterThanOrEqual(0);
+    expect(attempt.durationUsedSec).toBeLessThanOrEqual(attempt.durationMin * 60);
   });
 
   test('section practice only builds one section', async ({ page }) => {

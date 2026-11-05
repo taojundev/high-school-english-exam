@@ -299,6 +299,19 @@ describe('scoring', () => {
     expect(result.lowConfidence).toBe(true);
   });
 
+  it('caps a same-window padded translation at one point', () => {
+    // Without the 1-point cap this answer earns roundHalf(0.5 * 3) = 1.5, so this pins the cap itself.
+    const item = BANK.translation[0];
+    const padded = 'Seeing volunteer moved the the the the the the';
+    const minWords = Math.max(6, Math.ceil(countWords(item.reference) * 0.6));
+    expect(countWords(padded)).toBeGreaterThanOrEqual(minWords);
+    const result = scoreAttempt(translationPaper(item), { q1: padded }, meta()).results[0];
+    // Guard against a vacuous test: the keyword window really does cover every content point.
+    expect(result.covered?.every((c) => c.ok)).toBe(true);
+    expect(result.earned).toBeLessThanOrEqual(1);
+    expect(result.correct).toBe(false);
+  });
+
   it('never lets a truncated keyword variant pass as a translation', () => {
     for (const item of BANK.translation) {
       const paper = translationPaper(item);
@@ -308,6 +321,81 @@ describe('scoring', () => {
         expect(result.correct, `${item.id}: "${variant}"`).toBe(false);
         expect(result.lowConfidence, `${item.id}: "${variant}"`).toBe(true);
       }
+    }
+  });
+
+  it('flags function-word padded translations without touching their score', () => {
+    // Each answer is long enough and clause-shaped, so only the content-density check can flag it.
+    const padding: Array<[string, string, number]> = [
+      ['t-01', 'Seeing the students the volunteer the the the', 2],
+      ['t-02', 'Not until midnight did he realize the the the the', 2],
+      ['t-03', 'Not only is the book interesting but it also the the the', 1],
+      ['t-29', 'He can speak not only the the', 2],
+      ['t-30', 'The doctor advised him to eat less sugar and the the the the the the the', 2],
+    ];
+    for (const [id, text, earned] of padding) {
+      const item = BANK.translation.find((t) => t.id === id)!;
+      const result = scoreAttempt(translationPaper(item), { q1: text }, meta()).results[0];
+      expect(result.lowConfidence, `${id}: ${text}`).toBe(true);
+      // Only the confidence marker changed; the earned points stay where they were.
+      expect(result.earned, `${id}: ${text}`).toBe(earned);
+      expect(result.correct, `${id}: ${text}`).toBe(false);
+      expect(result.feedback, `${id}: ${text}`).toContain('实词比例过低');
+    }
+  });
+
+  it('never flags reference answers and model essays as low confidence', () => {
+    for (const item of BANK.translation) {
+      const result = scoreAttempt(translationPaper(item), { q1: item.reference }, meta()).results[0];
+      expect(result.lowConfidence, item.id).toBe(false);
+    }
+    for (const item of BANK.summary) {
+      const paper = paperWith(
+        [
+          {
+            sourceId: item.id,
+            section: 'summary',
+            type: 'summary',
+            points: 10,
+            difficulty: item.difficulty,
+            tags: ['概要写作'],
+            groupId: `summary-${item.id}`,
+            stem: item.prompt,
+            reference: item.sample,
+            sample: item.sample,
+            keyPoints: item.keyPoints,
+            minWords: item.minWords,
+            maxWords: item.maxWords,
+            tips: item.tips,
+          },
+        ],
+        { [`summary-${item.id}`]: { kind: 'passage', title: item.title, text: item.text } },
+      );
+      const result = scoreAttempt(paper, { q1: item.sample }, meta()).results[0];
+      expect(result.lowConfidence, item.id).toBe(false);
+    }
+    for (const item of BANK.writing) {
+      const paper = paperWith([
+        {
+          sourceId: item.id,
+          section: 'writing',
+          type: 'writing',
+          points: 25,
+          difficulty: item.difficulty,
+          tags: ['写作'],
+          groupId: `writing-${item.id}`,
+          stem: item.prompt,
+          requirements: item.requirements,
+          reference: item.sample,
+          sample: item.sample,
+          keyPoints: item.keyPoints,
+          minWords: item.minWords,
+          maxWords: item.maxWords,
+          tips: item.tips,
+        },
+      ]);
+      const result = scoreAttempt(paper, { q1: item.sample }, meta()).results[0];
+      expect(result.lowConfidence, item.id).toBe(false);
     }
   });
 
@@ -463,6 +551,40 @@ describe('scoring', () => {
     expect(section.accuracy).toBeLessThan(0.7);
     expect(attempt.suggestions.some((s) => s.section === 'writing')).toBe(true);
     expect(attempt.suggestions.some((s) => s.title.includes('冲击高分'))).toBe(false);
+  });
+
+  it('caps a short but well-structured writing answer', () => {
+    const item = BANK.writing[5];
+    const paper = paperWith([
+      {
+        sourceId: item.id,
+        section: 'writing',
+        type: 'writing',
+        points: 25,
+        difficulty: item.difficulty,
+        tags: ['写作'],
+        groupId: `writing-${item.id}`,
+        stem: item.prompt,
+        requirements: item.requirements,
+        reference: item.sample,
+        sample: item.sample,
+        keyPoints: item.keyPoints,
+        minWords: item.minWords,
+        maxWords: item.maxWords,
+        tips: item.tips,
+      },
+    ]);
+    const answer =
+      'Remember to visit the Bund in the morning. the history museum and the garden are great...';
+    expect(countWords(answer)).toBeGreaterThanOrEqual(5);
+    expect(countWords(answer)).toBeLessThan(80);
+    const result = scoreAttempt(paper, { q1: answer }, meta()).results[0];
+    expect(result.covered?.filter((c) => c.ok).length).toBe(item.keyPoints.length);
+    // The answer has full sentences, so only the <80-word content cap can keep it at 5 or below.
+    expect(result.earned).toBeLessThanOrEqual(5);
+    expect(result.correct).toBe(false);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.feedback).toContain('内容项上限为 2/10');
   });
 
   it('never suggests aiming higher while a subjective section is below 70%', () => {

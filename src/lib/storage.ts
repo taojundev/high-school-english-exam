@@ -92,9 +92,13 @@ export function loadReview(): string[] {
   return Array.isArray(list) ? list : [];
 }
 
-/** Recent and evicted ids in recency order: newest first, evicted ones last. */
+/**
+ * Recent and evicted ids in recency order: newest first, evicted ones last.
+ * A re-practised id can appear in both sets; keep its most recent (first) position so it is
+ * not mistaken for the least recently practised question.
+ */
 export function loadSeenHistory(): string[] {
-  return [...loadSeen(), ...loadReview()];
+  return [...new Set([...loadSeen(), ...loadReview()])];
 }
 
 export function markSeen(ids: string[]): void {

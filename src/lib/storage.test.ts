@@ -75,6 +75,22 @@ describe('storage failure handling', () => {
     expect(loadSeen()).not.toContain('old-01');
   });
 
+  it('dedupes the seen history so a re-practised id counts as recent', () => {
+    vi.stubGlobal('window', { localStorage: memoryStorage() });
+    markSeen(['t-01']);
+    markSeen(Array.from({ length: 405 }, (_, index) => `new-${index}`));
+    // t-01 was evicted from the hot window but stays practised through the review set.
+    expect(loadSeen()).not.toContain('t-01');
+    expect(loadReview()).toContain('t-01');
+
+    markSeen(['t-01']);
+    const history = loadSeenHistory();
+    expect(new Set(history).size).toBe(history.length);
+    expect(history.filter((id) => id === 't-01')).toEqual(['t-01']);
+    // The newest practice wins: t-01 sits at the recent end instead of the evicted tail.
+    expect(history.indexOf('t-01')).toBe(0);
+  });
+
   it('still flags an evicted question as review when the next paper is built', () => {
     vi.stubGlobal('window', { localStorage: memoryStorage() });
     // Every short dialogue counts as practised; the target is the oldest, so it is evicted first.

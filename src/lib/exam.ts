@@ -505,6 +505,16 @@ export function generatePaper(options: GenerateOptions): Paper {
   };
 }
 
+/** Options that rebuild a stored paper exactly; the result page replay must go through this. */
+export function paperReplayOptions(paper: Paper): GenerateOptions {
+  return {
+    mode: paper.mode,
+    section: paper.mode === 'section' ? paper.sectionFilter ?? paper.sections[0].id : undefined,
+    seed: paper.seed,
+    difficulty: paper.difficulty,
+  };
+}
+
 export function paperSourceIds(paper: Paper): string[] {
   return paper.questions.map((q) => q.sourceId);
 }
