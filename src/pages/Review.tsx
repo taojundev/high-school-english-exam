@@ -185,6 +185,9 @@ function ReviewItem({
           <span className="review-points">
             {estimated ? `估分 ${result.earned}/${result.points}` : `${result.earned}/${result.points} 分`}
           </span>
+          {estimated && result.lowConfidence ? (
+            <span className="review-cap-note">低置信度：估分再按 50% 封顶</span>
+          ) : null}
         </div>
       </div>
 

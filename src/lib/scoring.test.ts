@@ -813,4 +813,116 @@ describe('scoring', () => {
     expect(writingSuggestion?.detail).toContain('估分');
     expect(writingSuggestion?.detail).toContain('不参与评级');
   });
+
+  it('caps a low-confidence 485-word writing answer at half marks', () => {
+    const item = BANK.writing[0];
+    const paper = paperWith([
+      {
+        sourceId: item.id,
+        section: 'writing',
+        type: 'writing',
+        points: 25,
+        difficulty: item.difficulty,
+        tags: ['写作'],
+        groupId: `writing-${item.id}`,
+        stem: item.prompt,
+        requirements: item.requirements,
+        reference: item.sample,
+        sample: item.sample,
+        keyPoints: item.keyPoints,
+        minWords: item.minWords,
+        maxWords: item.maxWords,
+        tips: item.tips,
+      },
+    ]);
+    const sentences = [
+      'I am glad to welcome you to our school and share the club news.',
+      'The English Drama Club meets every Friday afternoon in Room 302.',
+      'The Photography Club also meets after school and explores the city.',
+      'Could you let me know when you will arrive and which club interests you?',
+      'I am looking forward to meeting you and showing you around the campus.',
+      'Both clubs are friendly to new members and welcome every student.',
+    ];
+    let essay = '';
+    for (let i = 0; countWords(essay) < 485; i++) {
+      essay += `${sentences[i % sentences.length]} `;
+    }
+    essay = essay.trim().split(/\s+/).slice(0, 485).join(' ');
+    expect(countWords(essay)).toBe(485);
+    expect(countWords(essay)).toBeGreaterThan(item.maxWords * 1.25);
+
+    const result = scoreAttempt(paper, { q1: essay }, meta()).results[0];
+    // Guard against a vacuous test: the essay really does cover every task point.
+    expect(result.covered?.every((c) => c.ok)).toBe(true);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.earned).toBeLessThanOrEqual(12.5);
+    expect(result.earned).toBe(12.5);
+    expectEstimated(result);
+  });
+
+  it('caps a low-confidence summary at half marks', () => {
+    const item = BANK.summary[0];
+    const paper = paperWith(
+      [
+        {
+          sourceId: item.id,
+          section: 'summary',
+          type: 'summary',
+          points: 10,
+          difficulty: item.difficulty,
+          tags: ['概要写作'],
+          groupId: `summary-${item.id}`,
+          stem: item.prompt,
+          reference: item.sample,
+          sample: item.sample,
+          keyPoints: item.keyPoints,
+          minWords: item.minWords,
+          maxWords: item.maxWords,
+          tips: item.tips,
+        },
+      ],
+      { [`summary-${item.id}`]: { kind: 'passage', title: item.title, text: item.text } },
+    );
+    // One copied 8-word source shingle inside an otherwise valid 60-word summary: still in range,
+    // so only the low-confidence (copied) cap can keep this at half marks.
+    const answer = `${item.sample} Bike sharing has spread quickly in cities around.`;
+    expect(countWords(answer)).toBeGreaterThanOrEqual(item.minWords);
+    expect(countWords(answer)).toBeLessThanOrEqual(item.maxWords * 1.25);
+
+    const result = scoreAttempt(paper, { q1: answer }, meta()).results[0];
+    expect(result.covered?.every((c) => c.ok)).toBe(true);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.earned).toBeLessThanOrEqual(5);
+    expect(result.earned).toBe(5);
+    expectEstimated(result);
+  });
+
+  it('never lets the 90% ceiling reach full marks on 1- and 2-point items', () => {
+    const item = BANK.translation[0];
+    for (const [points, expected] of [
+      [1, 0.5],
+      [2, 1.5],
+    ] as const) {
+      const paper = paperWith([
+        {
+          sourceId: item.id,
+          section: 'translation',
+          type: 'translation',
+          points,
+          difficulty: item.difficulty,
+          tags: item.tags,
+          groupId: `tr-${item.id}`,
+          stem: item.chinese,
+          reference: item.reference,
+          keyPoints: item.keyPoints,
+          tips: item.tips,
+        },
+      ]);
+      const result = scoreAttempt(paper, { q1: item.reference }, meta()).results[0];
+      expect(result.lowConfidence).toBe(false);
+      expect(result.earned, `points=${points}`).toBe(expected);
+      expect(result.earned, `points=${points}`).toBeLessThan(points);
+      expectEstimated(result, `points=${points}`);
+    }
+  });
 });

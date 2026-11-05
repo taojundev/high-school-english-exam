@@ -33,7 +33,8 @@ export function isEstimatedResult(result: Pick<QuestionResult, 'section' | 'grad
 }
 
 function estimateCap(points: number, lowConfidence: boolean): number {
-  const ceiling = roundHalf(points * ESTIMATE_MAX_RATE);
+  // Never let the ceiling equal full marks: for 1- and 2-point items a rounded 90% would do that.
+  const ceiling = Math.max(0, Math.min(points - 0.5, roundHalf(points * ESTIMATE_MAX_RATE)));
   return lowConfidence ? Math.min(ceiling, points * LOW_CONFIDENCE_MAX_RATE) : ceiling;
 }
 
@@ -52,6 +53,16 @@ export interface ScoreSplit {
   /** Objective + estimate, for display only. */
   totalScore: number;
   maxScore: number;
+}
+
+/** A paper with no objective questions has no basis for a rating. */
+export function hasObjectiveMarks(split: ScoreSplit): boolean {
+  return split.objectiveMax > 0;
+}
+
+/** A pure subjective practice paper: show the estimate as an estimate, never as a grade. */
+export function isSubjectiveOnly(split: ScoreSplit): boolean {
+  return split.objectiveMax === 0 && split.subjectiveMax > 0;
 }
 
 export function scoreSplit(results: QuestionResult[]): ScoreSplit {

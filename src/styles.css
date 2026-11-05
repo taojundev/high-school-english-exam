@@ -4348,3 +4348,18 @@ svg {
     grid-template-columns: 1fr;
   }
 }
+
+.stats-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.review-cap-note {
+  max-width: 150px;
+  color: #7b581d;
+  font-size: 0.62rem;
+  line-height: 1.4;
+  text-align: right;
+}

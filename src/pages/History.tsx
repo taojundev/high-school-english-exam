@@ -11,15 +11,17 @@ export default function HistoryPage() {
   const [attempts, setAttempts] = useState<Attempt[]>(() => loadAttempts());
 
   const stats = useMemo(() => {
-    if (attempts.length === 0) return { avg: 0, best: 0, time: 0 };
-    const ratios = attempts.map((a) => {
-      const split = attemptScoreSplit(a);
-      return split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
+    // Pure subjective practice has no objective denominator, so it cannot affect averages or the trend.
+    const ratable = attempts.filter((attempt) => attemptScoreSplit(attempt).objectiveMax > 0);
+    const ratios = ratable.map((attempt) => {
+      const split = attemptScoreSplit(attempt);
+      return split.objectiveScore / split.objectiveMax;
     });
     return {
-      avg: ratios.reduce((n, r) => n + r, 0) / ratios.length,
-      best: Math.max(...ratios),
-      time: attempts.reduce((n, a) => n + a.durationUsedSec, 0),
+      avg: ratios.length ? ratios.reduce((n, r) => n + r, 0) / ratios.length : 0,
+      best: ratios.length ? Math.max(...ratios) : 0,
+      time: attempts.reduce((n, attempt) => n + attempt.durationUsedSec, 0),
+      ratable,
     };
   }, [attempts]);
 
@@ -69,14 +71,14 @@ export default function HistoryPage() {
           <em>套</em>
         </div>
         <div className="result-stat">
-          <span>平均得分率</span>
-          <strong>{Math.round(stats.avg * 100)}</strong>
-          <em>%</em>
+          <span>平均客观题得分率</span>
+          <strong>{stats.ratable.length ? Math.round(stats.avg * 100) : '—'}</strong>
+          <em>{stats.ratable.length ? '%' : '暂无客观题记录'}</em>
         </div>
         <div className="result-stat">
-          <span>最高得分率</span>
-          <strong>{Math.round(stats.best * 100)}</strong>
-          <em>%</em>
+          <span>最高客观题得分率</span>
+          <strong>{stats.ratable.length ? Math.round(stats.best * 100) : '—'}</strong>
+          <em>{stats.ratable.length ? '%' : '等待客观题记录'}</em>
         </div>
         <div className="result-stat">
           <span>累计练习</span>
@@ -84,16 +86,23 @@ export default function HistoryPage() {
           <em>分钟</em>
         </div>
       </div>
+      <p className="stats-note">
+        统计口径：平均 / 最高客观题得分率与趋势只含客观题的记录；纯主观专项只显示估分，不参与评级。
+      </p>
 
       <section className="trend-panel">
         <div className="panel-head">
           <div>
             <span className="kicker">SCORE TREND</span>
-            <h2>得分率趋势</h2>
+            <h2>客观题得分率趋势</h2>
           </div>
           <Chart size={20} />
         </div>
-        <TrendChart attempts={attempts} />
+        {stats.ratable.length > 0 ? (
+          <TrendChart attempts={stats.ratable} />
+        ) : (
+          <p className="muted-text">还没有含客观题的记录，暂不生成趋势。</p>
+        )}
       </section>
 
       <section className="history-list-section">
@@ -107,13 +116,16 @@ export default function HistoryPage() {
         <div className="history-list">
           {attempts.map((attempt) => {
             const split = attemptScoreSplit(attempt);
-            const ratio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
-            const grade = gradeFor(split.objectiveScore, split.objectiveMax);
+            const ratable = split.objectiveMax > 0;
+            const ratio = ratable ? split.objectiveScore / split.objectiveMax : 0;
+            const grade = ratable ? gradeFor(split.objectiveScore, split.objectiveMax) : undefined;
             return (
               <article className="history-card" key={attempt.id}>
                 <div className="history-main">
                   <div className="history-top">
-                    <Pill tone={ratio >= 0.75 ? 'teal' : ratio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
+                    <Pill tone={ratable ? (ratio >= 0.75 ? 'teal' : ratio >= 0.6 ? 'gold' : 'accent') : 'gold'}>
+                      {grade ? grade.label : '估分 · 不评级'}
+                    </Pill>
                     <span>{attempt.paper.mode === 'full' ? '全真模拟' : '专项训练'}</span>
                     <span>{formatDate(attempt.submittedAt)}</span>
                   </div>
@@ -130,7 +142,11 @@ export default function HistoryPage() {
                     ))}
                   </div>
                   <div className="history-meta">
-                    <span>主观估分 {split.subjectiveEstimate}/{split.subjectiveMax}（不参与评级）</span>
+                    {split.subjectiveMax > 0 ? (
+                      <span>
+                        主观估分 {split.subjectiveEstimate}/{split.subjectiveMax}（不参与评级）
+                      </span>
+                    ) : null}
                     <span>用时 {formatDuration(attempt.durationUsedSec)}</span>
                     <span>已答 {attempt.results.filter((r) => (attempt.answers[r.id] ?? '').trim()).length}/{attempt.results.length}</span>
                     <span>种子 {attempt.paper.seed}</span>
@@ -138,8 +154,8 @@ export default function HistoryPage() {
                 </div>
                 <div className="history-side">
                   <div className="history-score">
-                    <strong>{split.objectiveScore}</strong>
-                    <span>/ {split.objectiveMax}</span>
+                    <strong>{ratable ? split.objectiveScore : `估分 ${split.subjectiveEstimate}`}</strong>
+                    <span>/ {ratable ? split.objectiveMax : split.subjectiveMax}</span>
                   </div>
                   <div className="history-actions">
                     <Link to={`/result/${attempt.id}`} className="btn btn-primary btn-sm">

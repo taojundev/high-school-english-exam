@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, Printer, Spark, Target } from '../components/Ico
 import { EmptyState, Pill, ProgressBar, ScoreRing } from '../components/ui';
 import { generatePaper, paperReplayOptions } from '../lib/exam';
 import { formatClock, formatDate, formatDuration, gradeFor, percent } from '../lib/format';
-import { attemptScoreSplit, isEstimatedResult } from '../lib/scoring';
+import { attemptScoreSplit, hasObjectiveMarks, isEstimatedResult, isSubjectiveOnly } from '../lib/scoring';
 import { clearActive, getAttempt, loadActive, loadSeenHistory, saveActive } from '../lib/storage';
 import type { Attempt, GenerateOptions, SectionId } from '../types';
 
@@ -40,8 +40,10 @@ export default function ResultPage() {
   const { paper } = attempt;
   // The grade comes from objective marks only; the subjective estimate is shown separately.
   const split = attemptScoreSplit(attempt);
-  const objectiveRatio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
-  const grade = gradeFor(split.objectiveScore, split.objectiveMax);
+  const hasObjective = hasObjectiveMarks(split);
+  const subjectiveOnly = isSubjectiveOnly(split);
+  const objectiveRatio = hasObjective ? split.objectiveScore / split.objectiveMax : 0;
+  const grade = hasObjective ? gradeFor(split.objectiveScore, split.objectiveMax) : undefined;
   const objective = attempt.results.filter((r) => !isEstimatedResult(r));
   const answered = attempt.results.filter((r) => (attempt.answers[r.id] ?? '').trim()).length;
   const correct = objective.filter((r) => r.correct).length;
@@ -126,42 +128,79 @@ export default function ResultPage() {
         <div className="result-hero-copy">
           <span className="kicker">SCORE REPORT</span>
           <h1>
-            这一次，客观题<em>{grade.label}</em>。
+            {hasObjective && grade ? (
+              <>
+                这一次，客观题<em>{grade.label}</em>。
+              </>
+            ) : (
+              <>
+                这一次，只看主观题<em>估分</em>。
+              </>
+            )}
           </h1>
           <p className="result-sub">
             {paper.title} · {formatDate(attempt.submittedAt)} · 用时 {formatDuration(attempt.durationUsedSec)} · 种子{' '}
             {paper.seed}
           </p>
           <div className="result-badges">
-            <Pill tone={objectiveRatio >= 0.75 ? 'teal' : objectiveRatio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
-            <Pill tone="muted">客观题 {split.objectiveScore}/{split.objectiveMax}</Pill>
-            <Pill tone="gold">主观题估分 {split.subjectiveEstimate}/{split.subjectiveMax}（不参与评级）</Pill>
+            {grade ? (
+              <Pill tone={objectiveRatio >= 0.75 ? 'teal' : objectiveRatio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
+            ) : null}
+            {hasObjective ? (
+              <Pill tone="muted">
+                客观题 {split.objectiveScore}/{split.objectiveMax}
+              </Pill>
+            ) : null}
+            {split.subjectiveMax > 0 ? (
+              <Pill tone="gold">
+                主观题估分 {split.subjectiveEstimate}/{split.subjectiveMax}
+                {hasObjective ? '（不参与评级）' : ''}
+              </Pill>
+            ) : null}
+            {subjectiveOnly ? <Pill tone="muted">不参与评级 · 以人工阅卷为准</Pill> : null}
             <Pill tone="muted">已答 {answered}/{attempt.results.length}</Pill>
             <Pill tone="muted">{paper.mode === 'full' ? '全真模拟' : '专项训练'}</Pill>
           </div>
           <p className="result-note">
-            {grade.note}。评级只看客观题（{split.objectiveScore}/{split.objectiveMax}）；翻译、概要、写作的分数是初步估分，不参与评级。
+            {hasObjective && grade
+              ? `${grade.note}。评级只看客观题（${split.objectiveScore}/${split.objectiveMax}）${
+                  split.subjectiveMax > 0 ? '；翻译、概要、写作的分数是初步估分，不参与评级。' : '。'
+                }`
+              : '翻译、概要、写作只给估分，不参与评级，最终以人工阅卷为准。'}
           </p>
         </div>
-        <ScoreRing score={split.objectiveScore} max={split.objectiveMax} label={`${grade.label} · 客观题`} size={196} />
+        {hasObjective ? (
+          <ScoreRing score={split.objectiveScore} max={split.objectiveMax} label={`${grade?.label ?? ''} · 客观题`} size={196} />
+        ) : split.subjectiveMax > 0 ? (
+          <ScoreRing
+            score={split.subjectiveEstimate}
+            max={split.subjectiveMax}
+            label="估分 · 不参与评级"
+            size={196}
+          />
+        ) : null}
       </header>
 
       <section className="result-stat-grid" aria-label="成绩摘要">
-        <div className="result-stat">
-          <span>客观题正确率</span>
-          <strong>{percent(objective.length ? correct / objective.length : 0)}</strong>
-          <em>
-            {correct}/{objective.length} 题
-          </em>
-        </div>
-        <div className="result-stat">
-          <span>主观题估分</span>
-          <strong>
-            {split.subjectiveEstimate}
-            <i> / {split.subjectiveMax}</i>
-          </strong>
-          <em>翻译 · 概要 · 写作（不参与评级）</em>
-        </div>
+        {hasObjective ? (
+          <div className="result-stat">
+            <span>客观题正确率</span>
+            <strong>{percent(objective.length ? correct / objective.length : 0)}</strong>
+            <em>
+              {correct}/{objective.length} 题
+            </em>
+          </div>
+        ) : null}
+        {split.subjectiveMax > 0 ? (
+          <div className="result-stat">
+            <span>主观题估分</span>
+            <strong>
+              {split.subjectiveEstimate}
+              <i> / {split.subjectiveMax}</i>
+            </strong>
+            <em>{hasObjective ? '翻译 · 概要 · 写作（不参与评级）' : '不参与评级 · 以人工阅卷为准'}</em>
+          </div>
+        ) : null}
         <div className="result-stat">
           <span>平均每题用时</span>
           <strong>{Math.round(attempt.durationUsedSec / Math.max(1, attempt.results.length))}</strong>
@@ -315,7 +354,9 @@ export default function ResultPage() {
       </section>
 
       <p className="result-disclaimer">
-        说明：客观题按标准答案判分，评级（卓越/优秀/良好/及格/待提升）只由客观题得分决定。翻译、概要、写作由关键词覆盖规则估算，不判断语义是否等价，也不宣称满分；最终以人工阅卷为准。自动估分上限为题目分数的 90%，低置信度作答再封顶 50%。历史成绩单保留原评分，不重新计算。成绩与解析仅用于练习。
+        {subjectiveOnly
+          ? '说明：本卷只有翻译、概要、写作，分数由关键词覆盖规则估算，不参与评级，最终以人工阅卷为准。自动估分上限为题目分数的 90%，低置信度作答再封顶 50%。历史成绩单保留原评分，不重新计算。成绩与解析仅用于练习。'
+          : '说明：客观题按标准答案判分，评级（卓越/优秀/良好/及格/待提升）只由客观题得分决定。翻译、概要、写作由关键词覆盖规则估算，不判断语义是否等价，也不宣称满分；最终以人工阅卷为准。自动估分上限为题目分数的 90%，低置信度作答再封顶 50%。历史成绩单保留原评分，不重新计算。成绩与解析仅用于练习。'}
       </p>
     </div>
   );

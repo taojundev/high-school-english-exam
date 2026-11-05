@@ -27,17 +27,16 @@ export default function HomePage() {
   const totals = useMemo(() => bankTotals(), []);
 
   const stats = useMemo(() => {
-    if (attempts.length === 0) return { count: 0, avg: 0, best: 0, last: null as null | (typeof attempts)[number] };
-    // Averages and grades track objective marks only; subjective estimates are shown separately.
-    const ratios = attempts.map((a) => {
-      const split = attemptScoreSplit(a);
-      return split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
-    });
+    const scored = attempts.map((attempt) => ({ attempt, split: attemptScoreSplit(attempt) }));
+    // Averages only use papers with objective questions; pure subjective practice is not rated.
+    const ratable = scored.filter((entry) => entry.split.objectiveMax > 0);
+    const ratios = ratable.map((entry) => entry.split.objectiveScore / entry.split.objectiveMax);
     return {
       count: attempts.length,
-      avg: ratios.reduce((n, r) => n + r, 0) / ratios.length,
-      best: Math.max(...ratios),
-      last: attempts[0],
+      ratableCount: ratable.length,
+      avg: ratios.length ? ratios.reduce((n, r) => n + r, 0) / ratios.length : 0,
+      best: ratios.length ? Math.max(...ratios) : 0,
+      last: attempts[0] as (typeof attempts)[number] | undefined,
     };
   }, [attempts]);
 
@@ -91,7 +90,9 @@ export default function HomePage() {
 
   const recent = attempts.slice(0, 3);
   const lastSplit = stats.last ? attemptScoreSplit(stats.last) : undefined;
-  const lastGrade = lastSplit ? gradeFor(lastSplit.objectiveScore, lastSplit.objectiveMax) : undefined;
+  const lastHasObjective = Boolean(lastSplit && lastSplit.objectiveMax > 0);
+  const lastGrade = lastSplit && lastHasObjective ? gradeFor(lastSplit.objectiveScore, lastSplit.objectiveMax) : undefined;
+  const lastRatio = lastSplit && lastHasObjective ? lastSplit.objectiveScore / lastSplit.objectiveMax : 0;
 
   return (
     <div className="home-page">
@@ -135,18 +136,24 @@ export default function HomePage() {
             <span className="hero-card-label">{stats.last ? '最近一次成绩' : '全真模拟卷'}</span>
             <span className="hero-card-seal">模考</span>
           </div>
-          {stats.last && lastSplit && lastGrade ? (
+          {stats.last && lastSplit ? (
             <>
               <div className="hero-score">
-                <strong>{lastSplit.objectiveScore}</strong>
-                <span>/ {lastSplit.objectiveMax}</span>
+                <strong>{lastHasObjective ? lastSplit.objectiveScore : lastSplit.subjectiveEstimate}</strong>
+                <span>/ {lastHasObjective ? lastSplit.objectiveMax : lastSplit.subjectiveMax}</span>
               </div>
               <div className="hero-score-meta">
-                <Pill tone="accent">{lastGrade.label}</Pill>
+                <Pill tone={lastGrade ? (lastRatio >= 0.75 ? 'teal' : lastRatio >= 0.6 ? 'gold' : 'accent') : 'gold'}>
+                  {lastGrade ? lastGrade.label : '估分 · 不评级'}
+                </Pill>
                 <span>{formatDate(stats.last.submittedAt)}</span>
               </div>
               <p className="hero-estimate-note">
-                客观题得分 · 主观题估分 {lastSplit.subjectiveEstimate}/{lastSplit.subjectiveMax}（不参与评级）
+                {lastGrade
+                  ? lastSplit.subjectiveMax > 0
+                    ? `客观题得分 · 主观题估分 ${lastSplit.subjectiveEstimate}/${lastSplit.subjectiveMax}（不参与评级）`
+                    : '客观题得分 · 本卷不含主观题'
+                  : '主观题估分 · 以人工阅卷为准（不参与评级）'}
               </p>
               <div className="hero-mini-bars">
                 {stats.last.sectionResults.slice(0, 5).map((s) => (
@@ -220,14 +227,14 @@ export default function HomePage() {
           <em>套试卷</em>
         </div>
         <div className="stat">
-          <span className="stat-label">平均得分率</span>
-          <strong>{stats.count ? Math.round(stats.avg * 100) : '—'}</strong>
-          <em>{stats.count ? '%' : '开始第一套'}</em>
+          <span className="stat-label">平均客观题得分率</span>
+          <strong>{stats.ratableCount ? Math.round(stats.avg * 100) : '—'}</strong>
+          <em>{stats.ratableCount ? '%' : '暂无客观题记录'}</em>
         </div>
         <div className="stat">
-          <span className="stat-label">最高得分率</span>
-          <strong>{stats.count ? Math.round(stats.best * 100) : '—'}</strong>
-          <em>{stats.count ? '%' : '等待记录'}</em>
+          <span className="stat-label">最高客观题得分率</span>
+          <strong>{stats.ratableCount ? Math.round(stats.best * 100) : '—'}</strong>
+          <em>{stats.ratableCount ? '%' : '等待客观题记录'}</em>
         </div>
         <div className="stat">
           <span className="stat-label">题库小题</span>
@@ -235,6 +242,9 @@ export default function HomePage() {
           <em>道可抽取</em>
         </div>
       </section>
+      <p className="container stats-note">
+        统计口径：平均 / 最高客观题得分率只计入含客观题的记录；纯主观专项只显示估分，不参与评级。
+      </p>
 
       <section className="container start-section" id="start">
         <div className="start-card">
@@ -397,20 +407,27 @@ export default function HomePage() {
           <div className="recent-grid">
             {recent.map((attempt) => {
               const split = attemptScoreSplit(attempt);
-              const ratio = split.objectiveMax ? split.objectiveScore / split.objectiveMax : 0;
-              const grade = gradeFor(split.objectiveScore, split.objectiveMax);
+              const ratable = split.objectiveMax > 0;
+              const ratio = ratable ? split.objectiveScore / split.objectiveMax : 0;
+              const grade = ratable ? gradeFor(split.objectiveScore, split.objectiveMax) : undefined;
               return (
                 <Link className="recent-card" to={`/result/${attempt.id}`} key={attempt.id}>
                   <div className="recent-top">
                     <span>{attempt.paper.mode === 'full' ? '全真模拟' : '专项训练'}</span>
-                    <Pill tone={ratio >= 0.75 ? 'teal' : ratio >= 0.6 ? 'gold' : 'accent'}>{grade.label}</Pill>
+                    <Pill tone={ratable ? (ratio >= 0.75 ? 'teal' : ratio >= 0.6 ? 'gold' : 'accent') : 'gold'}>
+                      {grade ? grade.label : '估分 · 不评级'}
+                    </Pill>
                   </div>
                   <strong className="recent-score">
-                    {split.objectiveScore}
-                    <em>/ {split.objectiveMax}</em>
+                    {ratable ? split.objectiveScore : `估分 ${split.subjectiveEstimate}`}
+                    <em>/ {ratable ? split.objectiveMax : split.subjectiveMax}</em>
                   </strong>
                   <div className="recent-meta">
-                    <span>主观估分 {split.subjectiveEstimate}/{split.subjectiveMax}</span>
+                    {split.subjectiveMax > 0 ? (
+                      <span>
+                        主观估分 {split.subjectiveEstimate}/{split.subjectiveMax}
+                      </span>
+                    ) : null}
                     <span>{formatDate(attempt.submittedAt)}</span>
                     <span>{formatDuration(attempt.durationUsedSec)}</span>
                   </div>
