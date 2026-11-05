@@ -1175,6 +1175,40 @@ svg {
   letter-spacing: 0.08em;
 }
 
+.start-options {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.seed-picker {
+  display: block;
+}
+
+.seed-input {
+  width: 170px;
+  font-family: var(--font-mono);
+}
+
+.storage-warning {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(181, 74, 45, 0.35);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 0.8rem;
+}
+
+.review-tag {
+  align-self: center;
+}
+
 .start-cta {
   display: flex;
   align-items: center;

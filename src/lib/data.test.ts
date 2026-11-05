@@ -61,6 +61,13 @@ describe('question bank integrity', () => {
     }
   });
 
+  it('has enough reading and short-listening material for the five-paper rotation', () => {
+    expect(BANK.reading.length).toBeGreaterThanOrEqual(24);
+    expect(BANK.listeningShort.length).toBeGreaterThanOrEqual(40);
+    expect(new Set(BANK.reading.map((r) => r.id)).size).toBe(BANK.reading.length);
+    expect(new Set(BANK.listeningShort.map((s) => s.id)).size).toBe(BANK.listeningShort.length);
+  });
+
   it('has complete subjective task metadata', () => {
     for (const item of BANK.translation) {
       expect(item.keyPoints).toHaveLength(3);

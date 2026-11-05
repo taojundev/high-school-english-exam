@@ -117,10 +117,54 @@ describe('generatePaper', () => {
   });
 
   it('has a bank large enough for varied papers', () => {
-    expect(BANK.listeningShort.length).toBeGreaterThanOrEqual(20);
-    expect(BANK.reading.length).toBeGreaterThanOrEqual(10);
+    expect(BANK.listeningShort.length).toBeGreaterThanOrEqual(40);
+    expect(BANK.reading.length).toBeGreaterThanOrEqual(24);
     expect(BANK.cloze.length).toBeGreaterThanOrEqual(5);
     expect(BANK.translation.length).toBeGreaterThanOrEqual(30);
     expect(BANK.writing.length).toBeGreaterThanOrEqual(12);
+  });
+
+  it('does not repeat reading passages across six consecutive full papers', () => {
+    const seen: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const paper = generatePaper({ mode: 'full', seed: 5000 + i, seenIds: seen });
+      const reading = paper.questions.filter((q) => q.section === 'reading');
+      expect(reading.every((q) => !q.review)).toBe(true);
+      seen.push(...paperSourceIds(paper));
+    }
+  });
+
+  it('marks unavoidable repeats as review items', () => {
+    const seen: string[] = [];
+    const papers: Paper[] = [];
+    for (let i = 0; i < 5; i++) {
+      const paper = generatePaper({ mode: 'full', seed: 6000 + i, seenIds: seen });
+      papers.push(paper);
+      seen.push(...paperSourceIds(paper));
+    }
+    const shortOf = (paper: Paper) =>
+      paper.questions.filter((q) => q.section === 'listening' && q.groupId.startsWith('ls-'));
+    for (const paper of papers.slice(0, 4)) {
+      expect(shortOf(paper).every((q) => !q.review)).toBe(true);
+    }
+    // 40 short dialogues cover four papers (10 each); the fifth must recycle and say so.
+    expect(shortOf(papers[4]).every((q) => q.review)).toBe(true);
+    expect(papers[4].questions.some((q) => q.review)).toBe(true);
+  });
+
+  it('takes the 11th vocabulary word from unselected distractors, never from answers', () => {
+    const allAnswers = new Set(BANK.vocabulary.map((v) => v.answer.toLowerCase()));
+    for (let seed = 1; seed <= 12; seed++) {
+      const paper = generatePaper({ mode: 'full', seed, seenIds: [] });
+      const words = Object.values(paper.wordBanks)[0];
+      expect(words).toHaveLength(11);
+      expect(new Set(words.map((w) => w.toLowerCase())).size).toBe(11);
+      const vocabAnswers = new Set(
+        paper.questions.filter((q) => q.type === 'vocab').map((q) => (q.answerText ?? '').toLowerCase()),
+      );
+      const extra = words.find((w) => !vocabAnswers.has(w.toLowerCase()));
+      expect(extra).toBeDefined();
+      expect(allAnswers.has(extra!.toLowerCase())).toBe(false);
+    }
   });
 });

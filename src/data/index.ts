@@ -1,12 +1,17 @@
 import type { Bank } from '../types';
-import { listeningLong, listeningShort } from './listening';
+import { listeningLong, listeningShort as listeningShortCore } from './listening';
+import { listeningShortExtra } from './listeningExtra';
 import { grammarFill, grammarMcq } from './grammar';
 import { vocabulary } from './vocabulary';
 import { cloze } from './cloze';
-import { reading } from './reading';
+import { reading as readingCore } from './reading';
+import { readingExtra } from './readingExtra';
 import { translation } from './translation';
 import { summary } from './summary';
 import { writing } from './writing';
+
+const listeningShort = [...listeningShortCore, ...listeningShortExtra];
+const reading = [...readingCore, ...readingExtra];
 
 export const BANK: Bank = {
   listeningShort,

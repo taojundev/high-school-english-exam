@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { BANK } from '../data';
 import { generatePaper } from './exam';
+import { buildSuggestions } from './advice';
 import { countWords, keyPointCoverage, scoreAttempt, type AttemptMeta } from './scoring';
-import type { Paper } from '../types';
+import type { ExamQuestion, Paper, QuestionResult, SectionId, SectionResult } from '../types';
 
 const meta = (): AttemptMeta => ({
   startedAt: new Date('2026-01-01T09:00:00Z').toISOString(),
@@ -11,6 +13,34 @@ const meta = (): AttemptMeta => ({
   transcriptReveals: [],
   replayCounts: {},
 });
+
+function paperWith(questions: Omit<ExamQuestion, 'id' | 'number'>[], contexts: Paper['contexts'] = {}): Paper {
+  const built = questions.map((q, index) => ({ ...q, id: `q${index + 1}`, number: index + 1 }));
+  const bySection = new Map<SectionId, ExamQuestion[]>();
+  for (const q of built) bySection.set(q.section, [...(bySection.get(q.section) ?? []), q]);
+  return {
+    version: 1,
+    id: 'test-paper',
+    seed: 1,
+    createdAt: new Date().toISOString(),
+    mode: 'section',
+    title: 'test',
+    durationMin: 120,
+    sections: [...bySection].map(([id, list]) => ({
+      id,
+      name: id,
+      en: id,
+      points: list.reduce((n, q) => n + q.points, 0),
+      minutes: 20,
+      instructions: '',
+      questionIds: list.map((q) => q.id),
+    })),
+    questions: built,
+    contexts,
+    wordBanks: {},
+    maxScore: built.reduce((n, q) => n + q.points, 0),
+  };
+}
 
 function perfectAnswers(paper: Paper): Record<string, string> {
   const answers: Record<string, string> = {};
@@ -102,5 +132,138 @@ describe('scoring', () => {
       { label: 'missing', patterns: ['\\bxyz\\b'] },
     ]);
     expect(covered.map((c) => c.ok)).toEqual([true, true, false]);
+  });
+
+  it('does not reward a keyword list as a translation', () => {
+    const item = BANK.translation[0];
+    const paper = paperWith([
+      {
+        sourceId: item.id,
+        section: 'translation',
+        type: 'translation',
+        points: 3,
+        difficulty: item.difficulty,
+        tags: item.tags,
+        groupId: `tr-${item.id}`,
+        stem: item.chinese,
+        reference: item.reference,
+        keyPoints: item.keyPoints,
+        tips: item.tips,
+      },
+    ]);
+    const weird = scoreAttempt(paper, { q1: 'seeing volunteer moved' }, meta()).results[0];
+    const full = scoreAttempt(paper, { q1: item.reference }, meta()).results[0];
+    expect(weird.earned).toBeLessThanOrEqual(1);
+    expect(weird.correct).toBe(false);
+    expect(weird.lowConfidence).toBe(true);
+    expect(full.earned).toBe(3);
+    expect(full.correct).toBe(true);
+  });
+
+  it('caps a pasted summary and refuses to call it complete', () => {
+    const item = BANK.summary[0];
+    const paper = paperWith(
+      [
+        {
+          sourceId: item.id,
+          section: 'summary',
+          type: 'summary',
+          points: 10,
+          difficulty: item.difficulty,
+          tags: ['概要写作'],
+          groupId: `summary-${item.id}`,
+          stem: item.prompt,
+          reference: item.sample,
+          sample: item.sample,
+          keyPoints: item.keyPoints,
+          minWords: item.minWords,
+          maxWords: item.maxWords,
+          tips: item.tips,
+        },
+      ],
+      { [`summary-${item.id}`]: { kind: 'passage', title: item.title, text: item.text } },
+    );
+    const pasted = scoreAttempt(paper, { q1: item.text }, meta()).results[0];
+    expect(countWords(item.text)).toBeGreaterThan(item.maxWords * 1.25);
+    expect(pasted.covered?.every((c) => c.ok)).toBe(true);
+    expect(pasted.earned).toBeLessThan(5);
+    expect(pasted.correct).toBe(false);
+    expect(pasted.lowConfidence).toBe(true);
+    expect(pasted.feedback).toContain('低置信度初评');
+    expect(pasted.feedback).not.toContain('要点较完整');
+  });
+
+  it('caps content and never marks a four-word essay correct', () => {
+    const item = BANK.writing[0];
+    const paper = paperWith([
+      {
+        sourceId: item.id,
+        section: 'writing',
+        type: 'writing',
+        points: 25,
+        difficulty: item.difficulty,
+        tags: ['写作'],
+        groupId: `writing-${item.id}`,
+        stem: item.prompt,
+        requirements: item.requirements,
+        reference: item.sample,
+        sample: item.sample,
+        keyPoints: item.keyPoints,
+        minWords: item.minWords,
+        maxWords: item.maxWords,
+        tips: item.tips,
+      },
+    ]);
+    const attempt = scoreAttempt(paper, { q1: 'bund morning history remember' }, meta());
+    const writing = attempt.results[0];
+    expect(writing.earned).toBeLessThan(10);
+    expect(writing.correct).toBe(false);
+    expect(writing.lowConfidence).toBe(true);
+    expect(writing.feedback).toContain('低置信度初评');
+    const section = attempt.sectionResults[0];
+    expect(section.accuracy).toBe(section.score / section.max);
+    expect(section.accuracy).toBeLessThan(0.7);
+    expect(attempt.suggestions.some((s) => s.section === 'writing')).toBe(true);
+    expect(attempt.suggestions.some((s) => s.title.includes('冲击高分'))).toBe(false);
+  });
+
+  it('never suggests aiming higher while a subjective section is below 70%', () => {
+    const paper = generatePaper({ mode: 'full', seed: 3 });
+    const writingResult = {
+      id: 'q1',
+      sourceId: 'w-01',
+      section: 'writing',
+      type: 'writing',
+      number: 78,
+      points: 25,
+      earned: 10,
+      tags: ['写作'],
+      difficulty: 2,
+      correct: false,
+    } as QuestionResult;
+    const writingSection = {
+      id: 'writing',
+      name: '指导性写作',
+      en: 'Guided Writing',
+      score: 10,
+      max: 25,
+      correct: 0,
+      total: 1,
+      scoreRate: 0.4,
+      accuracy: 0.4,
+      tagStats: [],
+    } as SectionResult;
+    const suggestions = buildSuggestions({
+      results: [writingResult],
+      sectionResults: [writingSection],
+      tagStats: [],
+      timeBySection: {},
+      totalScore: 90,
+      maxScore: 100,
+      paper,
+      unanswered: 0,
+    });
+    expect(suggestions.some((s) => s.title.includes('冲击高分'))).toBe(false);
+    expect(suggestions.some((s) => s.section === 'writing')).toBe(true);
   });
 });

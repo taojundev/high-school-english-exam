@@ -275,7 +275,7 @@ export interface AdviceInput {
 }
 
 export function buildSuggestions(input: AdviceInput): Suggestion[] {
-  const { sectionResults, tagStats, timeBySection, totalScore, maxScore, paper, unanswered } = input;
+  const { results, sectionResults, tagStats, timeBySection, totalScore, maxScore, paper, unanswered } = input;
   const suggestions: Suggestion[] = [];
   const titles = new Set<string>();
 
@@ -300,7 +300,7 @@ export function buildSuggestions(input: AdviceInput): Suggestion[] {
     add({
       priority: priorityFor(tag.accuracy),
       title: entry.title,
-      detail: `${entry.detail}（本项 ${tag.correct}/${tag.total}，正确率 ${Math.round(tag.accuracy * 100)}%）`,
+      detail: `${entry.detail}（本项得分率 ${Math.round(tag.accuracy * 100)}%）`,
       action: entry.action,
       section: tag.section,
       tag: tag.tag,
@@ -308,18 +308,22 @@ export function buildSuggestions(input: AdviceInput): Suggestion[] {
     if (suggestions.length >= 3) break;
   }
 
+  const rateOf = (section: SectionResult) =>
+    section.scoreRate ?? (section.max > 0 ? section.score / section.max : 0);
   const weakSections = sectionResults
-    .filter((s) => s.max > 0 && s.accuracy < 0.7)
-    .sort((a, b) => a.accuracy - b.accuracy);
+    .filter((s) => s.max > 0 && rateOf(s) < 0.7)
+    // Highest-value (most lost marks) sections get the first slots, so reading/writing
+    // cannot be crowded out by low-value tag suggestions.
+    .sort((a, b) => b.max - b.score - (a.max - a.score) || rateOf(a) - rateOf(b));
 
   for (const section of weakSections) {
     if (suggestions.length >= 5) break;
     if (suggestions.some((s) => s.section === section.id)) continue;
     const entry = SECTION_ADVICE[section.id];
     add({
-      priority: priorityFor(section.accuracy),
+      priority: priorityFor(rateOf(section)),
       title: entry.title,
-      detail: `${entry.detail}（本节 ${section.score}/${section.max}，正确率 ${Math.round(section.accuracy * 100)}%）`,
+      detail: `${entry.detail}（本节 ${section.score}/${section.max}，得分率 ${Math.round(rateOf(section) * 100)}%）`,
       action: entry.action,
       section: section.id,
     });
@@ -350,7 +354,12 @@ export function buildSuggestions(input: AdviceInput): Suggestion[] {
   }
 
   const ratio = maxScore > 0 ? totalScore / maxScore : 0;
-  if (ratio >= 0.88) {
+  const subjective = results.filter(
+    (r) => r.type === 'translation' || r.type === 'summary' || r.type === 'writing',
+  );
+  const subjectiveHealthy = subjective.every((r) => r.points > 0 && r.earned / r.points >= 0.7);
+  // Never tell a student with a weak translation/summary/essay to simply "aim higher".
+  if (ratio >= 0.88 && subjectiveHealthy) {
     add({
       priority: 'low',
       title: '冲击高分：把“会做”变成“稳拿”',

@@ -8,8 +8,10 @@ import { formatClock, formatDuration } from '../lib/format';
 import { speakScript, speechSupported, stopSpeaking, type SpeechHandle } from '../lib/speech';
 import { clearActive, loadActive, loadSettings, markSeen, saveActive, saveAttempt } from '../lib/storage';
 import { scoreAttempt } from '../lib/scoring';
+import { examDeadline, resumeDraft, settleSectionTime } from '../lib/timing';
 import type {
   ActiveDraft,
+  Attempt,
   ExamQuestion,
   QuestionContext,
   SectionId,
@@ -22,14 +24,15 @@ export default function ExamPage() {
   const navigate = useNavigate();
   const [draft, setDraft] = useState<ActiveDraft | null>(() => {
     const current = loadActive();
-    return current && current.paper.id === paperId
-      ? { ...current, sectionEnteredAt: Date.now() }
-      : null;
+    return current && current.paper.id === paperId ? resumeDraft(current, Date.now()) : null;
   });
   const [now, setNow] = useState(() => Date.now());
   const [showSubmit, setShowSubmit] = useState(false);
   const [playing, setPlaying] = useState<{ groupId: string; handle: SpeechHandle } | null>(null);
   const [audioError, setAudioError] = useState(false);
+  const [autosaveFailed, setAutosaveFailed] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [pendingAttempt, setPendingAttempt] = useState<Attempt | null>(null);
   const submittedRef = useRef(false);
   const settings = useMemo(() => loadSettings(), []);
 
@@ -45,14 +48,36 @@ export default function ExamPage() {
   useEffect(() => {
     if (!draft) return;
     const timer = window.setTimeout(() => {
-      if (!submittedRef.current) saveActive(draft);
+      if (submittedRef.current) return;
+      const snapshot = { ...draft, lastActiveAt: Date.now() };
+      setAutosaveFailed(!saveActive(snapshot));
     }, 500);
     return () => window.clearTimeout(timer);
   }, [draft]);
 
+  // Periodic checkpoint: fold the elapsed interval into timeBySection so a save/exit
+  // or a crash never loses the current section's time.
+  useEffect(() => {
+    if (!draft) return;
+    const timer = window.setInterval(() => {
+      if (submittedRef.current) return;
+      const current = draftRef.current;
+      if (!current) return;
+      const settled = settleSectionTime(current, Date.now());
+      draftRef.current = settled;
+      setDraft(settled);
+      setAutosaveFailed(!saveActive(settled));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [draft !== null]);
+
   useEffect(() => {
     const flush = () => {
-      if (draftRef.current && !submittedRef.current) saveActive(draftRef.current);
+      const current = draftRef.current;
+      if (!current || submittedRef.current) return;
+      const settled = settleSectionTime(current, Date.now());
+      draftRef.current = settled;
+      saveActive(settled);
     };
     window.addEventListener('pagehide', flush);
     return () => {
@@ -73,24 +98,51 @@ export default function ExamPage() {
     stopSpeaking();
     setPlaying(null);
     const nowMs = Date.now();
-    const elapsed = Math.max(0, Math.round((nowMs - draft.sectionEnteredAt) / 1000));
-    const timeBySection = {
-      ...draft.timeBySection,
-      [draft.currentSection]: (draft.timeBySection[draft.currentSection] ?? 0) + elapsed,
-    };
-    const attempt = scoreAttempt(draft.paper, draft.answers, {
-      startedAt: draft.startedAt,
+    const settled = settleSectionTime(draftRef.current ?? draft, nowMs);
+    const attempt = scoreAttempt(settled.paper, settled.answers, {
+      startedAt: settled.startedAt,
       submittedAt: new Date().toISOString(),
-      durationUsedSec: Math.max(0, Math.round((nowMs - new Date(draft.startedAt).getTime()) / 1000)),
-      timeBySection,
-      transcriptReveals: draft.transcriptReveals,
-      replayCounts: draft.replayCounts,
+      durationUsedSec: Math.max(0, Math.round((nowMs - new Date(settled.startedAt).getTime()) / 1000)),
+      timeBySection: settled.timeBySection,
+      transcriptReveals: settled.transcriptReveals,
+      replayCounts: settled.replayCounts,
     });
-    saveAttempt(attempt);
-    markSeen(paperSourceIds(draft.paper));
+    if (!saveAttempt(attempt)) {
+      // Never clear the draft or navigate away when the attempt could not be persisted.
+      submittedRef.current = false;
+      draftRef.current = settled;
+      setPendingAttempt(attempt);
+      setDraft(settled);
+      setStorageError(
+        '成绩保存失败：浏览器存储已满或不可用。本次作答仍保留在草稿中，请先导出备份，清理空间后重试。',
+      );
+      if (!saveActive(settled)) setAutosaveFailed(true);
+      setShowSubmit(false);
+      return;
+    }
+    markSeen(paperSourceIds(settled.paper));
     clearActive();
     navigate(`/result/${attempt.id}`, { replace: true });
   }, [draft, navigate]);
+
+  const downloadJson = (data: unknown, filename: string) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportAttempt = () => {
+    if (pendingAttempt) downloadJson(pendingAttempt, `exam-attempt-${pendingAttempt.id}.json`);
+  };
+
+  const exportDraft = () => {
+    const current = draftRef.current;
+    if (current) downloadJson(current, `exam-draft-${current.paper.id}.json`);
+  };
 
   const deadline = draft ? new Date(draft.startedAt).getTime() + draft.paper.durationMin * 60_000 : 0;
   const remaining = draft ? Math.max(0, Math.floor((deadline - now) / 1000)) : 0;
@@ -98,12 +150,12 @@ export default function ExamPage() {
   const critical = remaining <= 60;
 
   useEffect(() => {
-    if (!draft || submittedRef.current) return;
+    if (!draft || submittedRef.current || storageError) return;
     if (remaining <= 0) {
       setShowSubmit(false);
       finish();
     }
-  }, [remaining, draft, finish]);
+  }, [remaining, draft, finish, storageError]);
 
   if (!draft) {
     return (
@@ -168,18 +220,14 @@ export default function ExamPage() {
 
   const goSection = (id: SectionId) => {
     stopAudio();
+    const nowMs = Date.now();
     setDraft((prev) => {
       if (!prev || prev.currentSection === id) return prev;
-      const nowMs = Date.now();
-      const elapsed = Math.max(0, Math.round((nowMs - prev.sectionEnteredAt) / 1000));
+      const settled = settleSectionTime(prev, nowMs);
       return {
-        ...prev,
+        ...settled,
         currentSection: id,
-        sectionEnteredAt: nowMs,
-        timeBySection: {
-          ...prev.timeBySection,
-          [prev.currentSection]: (prev.timeBySection[prev.currentSection] ?? 0) + elapsed,
-        },
+        sectionEnteredAt: Math.min(nowMs, examDeadline(settled)),
       };
     });
     setNow(Date.now());
@@ -221,7 +269,14 @@ export default function ExamPage() {
 
   const leave = () => {
     stopAudio();
-    saveActive(draft);
+    const settled = settleSectionTime(draft, Date.now());
+    draftRef.current = settled;
+    if (!saveActive(settled)) {
+      setAutosaveFailed(true);
+      setDraft(settled);
+      return;
+    }
+    setDraft(settled);
     navigate('/');
   };
 
@@ -229,6 +284,16 @@ export default function ExamPage() {
 
   return (
     <div className="exam-page">
+      {autosaveFailed ? (
+        <div className="container">
+          <div className="storage-warning" role="alert">
+            <span>自动保存失败：浏览器存储已满或不可用。作答仍在当前页面，请导出草稿后清理空间。</span>
+            <button type="button" className="text-link" onClick={exportDraft}>
+              导出当前草稿
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div className="exam-top">
         <div className="container exam-top-inner">
           <div className="exam-top-left">
@@ -520,6 +585,34 @@ export default function ExamPage() {
       </div>
 
       <Modal
+        open={Boolean(storageError)}
+        title="成绩未能保存"
+        onClose={() => setStorageError(null)}
+        actions={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={exportAttempt}>
+              下载成绩备份
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                setStorageError(null);
+                finish();
+              }}
+            >
+              重试保存
+            </button>
+          </>
+        }
+      >
+        <p className="submit-note warn-text">{storageError}</p>
+        <p className="submit-note">
+          备份文件包含本次试卷、作答、得分与建议。若存储一直不可用，可先导出备份，或清理浏览器存储后重新交卷。
+        </p>
+      </Modal>
+
+      <Modal
         open={showSubmit}
         title="确认交卷"
         onClose={() => setShowSubmit(false)}
@@ -670,6 +763,11 @@ function QuestionCard({
     <article className={flagged ? 'question-card flagged' : 'question-card'} id={`question-${q.id}`}>
       <div className="question-head">
         <div className="question-number">{q.number}</div>
+        {q.review ? (
+          <span className="mini-tag review-tag" title="该板块未做过的内容已用完，本轮为复习题">
+            本轮为复习题
+          </span>
+        ) : null}
         <div className="question-stem">
           {q.type === 'translation' ? <p className="translation-prompt">{q.stem}</p> : null}
           {q.type === 'summary' || q.type === 'writing' ? (

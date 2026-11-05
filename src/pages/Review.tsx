@@ -155,7 +155,17 @@ function ReviewItem({
   const answered = Boolean((attempt.answers[result.id] ?? '').trim());
   const subjective = question.type === 'translation' || question.type === 'summary' || question.type === 'writing';
   const status = result.correct ? 'correct' : answered ? 'wrong' : 'blank';
-  const statusLabel = result.correct ? (subjective ? '达标' : '正确') : answered ? (subjective ? '待提升' : '错误') : '未作答';
+  const statusLabel = result.lowConfidence
+    ? '低置信度初评'
+    : result.correct
+      ? subjective
+        ? '达标'
+        : '正确'
+      : answered
+        ? subjective
+          ? '待提升'
+          : '错误'
+        : '未作答';
 
   return (
     <article className={`review-item status-${status}`} id={`review-${result.id}`}>
@@ -164,6 +174,7 @@ function ReviewItem({
         <div className="review-title">
           <span className="review-section">{sectionName}</span>
           <div className="review-tags">
+            {question.review ? <span className="mini-tag">本轮为复习题</span> : null}
             {result.tags.slice(0, 4).map((tag) => (
               <span className="mini-tag" key={tag}>
                 {tag}

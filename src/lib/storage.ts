@@ -39,10 +39,10 @@ export function loadAttempts(): Attempt[] {
   return Array.isArray(list) ? list : [];
 }
 
-export function saveAttempt(attempt: Attempt): void {
+export function saveAttempt(attempt: Attempt): boolean {
   const list = loadAttempts().filter((a) => a.id !== attempt.id);
   list.unshift(attempt);
-  write(KEYS.attempts, list.slice(0, MAX_ATTEMPTS));
+  return write(KEYS.attempts, list.slice(0, MAX_ATTEMPTS));
 }
 
 export function getAttempt(id: string): Attempt | undefined {
@@ -69,12 +69,13 @@ export function saveActive(draft: ActiveDraft): boolean {
   return write(KEYS.active, draft);
 }
 
-export function clearActive(): void {
-  if (!available()) return;
+export function clearActive(): boolean {
+  if (!available()) return false;
   try {
     window.localStorage.removeItem(KEYS.active);
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }
 

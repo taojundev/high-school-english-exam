@@ -191,6 +191,8 @@ export interface ExamQuestion {
   minWords?: number;
   maxWords?: number;
   tips?: string[];
+  /** True when this item was drawn from the seen pool because the unseen pool ran out. */
+  review?: boolean;
 }
 
 export interface PaperSection {
@@ -243,6 +245,8 @@ export interface QuestionResult {
   userText?: string;
   covered?: KeyPointResult[];
   feedback?: string;
+  /** Subjective answer sits far outside the expected length / has no sentence structure. */
+  lowConfidence?: boolean;
 }
 
 export interface TagStat {
@@ -250,6 +254,9 @@ export interface TagStat {
   section: SectionId;
   correct: number;
   total: number;
+  /** Score-based rate: objective items earn 0/1, subjective items earn partial marks. */
+  earned?: number;
+  points?: number;
   accuracy: number;
 }
 
@@ -261,6 +268,8 @@ export interface SectionResult {
   max: number;
   correct: number;
   total: number;
+  /** earned / max. For subjective sections this replaces the old correct-count ratio. */
+  scoreRate?: number;
   accuracy: number;
   tagStats: TagStat[];
 }
@@ -292,6 +301,8 @@ export interface Attempt {
   suggestions: Suggestion[];
   transcriptReveals: string[];
   replayCounts: Record<string, number>;
+  /** 2 = subjective scoring tightened (length/copy gates). Older attempts keep their original marks. */
+  scoringVersion?: number;
 }
 
 export interface ActiveDraft {
@@ -303,7 +314,10 @@ export interface ActiveDraft {
   replayCounts: Record<string, number>;
   currentSection: SectionId;
   timeBySection: Partial<Record<SectionId, number>>;
+  /** Start of the current, not-yet-settled interval for the active section. */
   sectionEnteredAt: number;
+  /** Last moment the draft was known to be open in this browser tab (used to avoid counting offline gaps). */
+  lastActiveAt?: number;
 }
 
 export interface Settings {

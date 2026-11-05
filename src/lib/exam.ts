@@ -22,30 +22,47 @@ function idsOfGroup(group: { id: string; questions: { id: string }[] }): string[
   return [group.id, ...group.questions.map((q) => q.id)];
 }
 
+interface Picked<T> {
+  items: T[];
+  repeated: Set<T>;
+}
+
 function pickItems<T extends HasId>(
   items: readonly T[],
   count: number,
   rng: () => number,
   difficulty: GenerateOptions['difficulty'],
-  seen: Set<string>,
+  seenOrder: Map<string, number>,
   idsOf: (item: T) => string[] = (item) => [item.id],
-): T[] {
-  let pool = items.filter((item) => idsOf(item).every((id) => !seen.has(id)));
-  if (pool.length < count) pool = items.slice();
+): Picked<T> {
+  const recency = (item: T) => Math.min(...idsOf(item).map((id) => seenOrder.get(id) ?? Number.POSITIVE_INFINITY));
+  const isSeen = (item: T) => Number.isFinite(recency(item));
+  const unseen = items.filter((item) => !isSeen(item));
+  // When the unseen pool is too small, prefer the content seen longest ago instead of
+  // falling back to a completely unfiltered pool.
+  const seenItems = items.filter(isSeen).sort((a, b) => recency(b) - recency(a));
 
+  let pool: T[] = unseen;
+  if (pool.length < count) pool = [...pool, ...seenItems.slice(0, count - pool.length)];
+
+  let picked: T[];
   if (difficulty && difficulty !== 'mixed') {
     const target = difficulty === 'basic' ? 1 : 3;
     const preferred = pool.filter((item) => item.difficulty === target);
     const rest = pool
       .filter((item) => item.difficulty !== target)
       .sort((a, b) => Math.abs(a.difficulty - target) - Math.abs(b.difficulty - target));
-    if (preferred.length >= count) return sample(preferred, count, rng);
-    return [
-      ...sample(preferred, preferred.length, rng),
-      ...sample(rest, Math.max(0, count - preferred.length), rng),
-    ].slice(0, count);
+    if (preferred.length >= count) picked = sample(preferred, count, rng);
+    else {
+      picked = [
+        ...sample(preferred, preferred.length, rng),
+        ...sample(rest, Math.max(0, count - preferred.length), rng),
+      ].slice(0, count);
+    }
+  } else {
+    picked = sample(pool, count, rng);
   }
-  return sample(pool, count, rng);
+  return { items: picked, repeated: new Set(picked.filter(isSeen)) };
 }
 
 function shuffleMcq(
@@ -68,7 +85,7 @@ export function generatePaper(options: GenerateOptions): Paper {
   const seed = options.seed ?? randomSeed();
   const rng = mulberry32(seed);
   const mode: ExamMode = options.mode;
-  const seen = new Set<string>(options.seenIds ?? []);
+  const seenOrder = new Map((options.seenIds ?? []).map((id, index) => [id, index]));
   const paperId = `paper-${seed.toString(36)}-${Math.floor(rng() * 1e6).toString(36)}`;
   const questions: ExamQuestion[] = [];
   const contexts: Record<string, QuestionContext> = {};
@@ -86,22 +103,24 @@ export function generatePaper(options: GenerateOptions): Paper {
   if (wanted('listening')) {
     const ids: string[] = [];
     const shortCount = mode === 'full' ? 10 : 6;
-    const longs = pickItems(
+    const longPick = pickItems(
       bank.listeningLong,
       mode === 'full' ? 2 : 1,
       rng,
       options.difficulty,
-      seen,
+      seenOrder,
       idsOfGroup,
     );
+    const longs = longPick.items;
     const usedShort = new Set(longs.flatMap((g) => g.questions.map((q) => q.question)));
-    const shorts = pickItems(
+    const shortPick = pickItems(
       bank.listeningShort.filter((s) => !usedShort.has(s.question)),
       shortCount,
       rng,
       options.difficulty,
-      seen,
+      seenOrder,
     );
+    const shorts = shortPick.items;
     shorts.forEach((item, index) => {
       const groupId = `ls-${item.id}`;
       contexts[groupId] = {
@@ -125,6 +144,7 @@ export function generatePaper(options: GenerateOptions): Paper {
           answer: mcq.answer,
           answerText: mcq.options[mcq.answer],
           explanation: item.explanation,
+          review: shortPick.repeated.has(item),
         }),
       );
     });
@@ -152,6 +172,7 @@ export function generatePaper(options: GenerateOptions): Paper {
             answer: mcq.answer,
             answerText: mcq.options[mcq.answer],
             explanation: sub.explanation,
+            review: longPick.repeated.has(item),
           }),
         );
       });
@@ -169,12 +190,15 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('grammar')) {
     const ids: string[] = [];
-    const mcqItems = pickItems(bank.grammarMcq, mode === 'full' ? 6 : 6, rng, options.difficulty, seen);
-    const fillItems = pickItems(bank.grammarFill, mode === 'full' ? 4 : 4, rng, options.difficulty, seen);
+    const mcqPick = pickItems(bank.grammarMcq, 6, rng, options.difficulty, seenOrder);
+    const fillPick = pickItems(bank.grammarFill, 4, rng, options.difficulty, seenOrder);
+    const mcqItems = mcqPick.items;
+    const fillItems = fillPick.items;
+    const repeatedGrammarIds = new Set([...mcqPick.repeated, ...fillPick.repeated].map((item) => item.id));
     [...mcqItems, ...fillItems].forEach((item) => {
       const groupId = `g-${item.id}`;
       const isMcq = 'options' in item;
-      const mcq = isMcq ? shuffleMcq(item.options, item.answer, rng) : undefined;
+      const mcq = 'options' in item ? shuffleMcq(item.options, item.answer, rng) : undefined;
       ids.push(
         push({
           sourceId: item.id,
@@ -188,8 +212,9 @@ export function generatePaper(options: GenerateOptions): Paper {
           options: mcq?.options,
           answer: mcq?.answer,
           answerText: isMcq ? mcq!.options[mcq!.answer] : item.answer,
-          accept: isMcq ? undefined : item.accept,
+          accept: 'options' in item ? undefined : item.accept,
           explanation: item.explanation,
+          review: repeatedGrammarIds.has(item.id),
         }),
       );
     });
@@ -206,16 +231,33 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('vocabulary')) {
     const ids: string[] = [];
-    const items = pickItems(bank.vocabulary, 10, rng, options.difficulty, seen);
+    const vocabPick = pickItems(bank.vocabulary, 10, rng, options.difficulty, seenOrder);
+    const items = vocabPick.items;
     const groupId = `vocab-bank-${paperId}`;
-    const answers = new Set(items.map((i) => i.answer));
-    let extra = bank.vocabulary.find((v) => !answers.has(v.answer))?.answer;
-    if (!extra) {
-      extra = bank.vocabulary.flatMap((v) => v.distractors).find((w) => !answers.has(w));
+    const allAnswers = new Set(bank.vocabulary.map((v) => v.answer.toLowerCase()));
+    const usedWords = new Set<string>();
+    const words: string[] = [];
+    for (const item of items) {
+      if (!usedWords.has(item.answer.toLowerCase())) {
+        usedWords.add(item.answer.toLowerCase());
+        words.push(item.answer);
+      }
     }
-    const bankWords = [...answers];
-    if (extra && !answers.has(extra)) bankWords.push(extra);
-    wordBanks[groupId] = shuffle(bankWords, rng);
+    // The 11th word comes from the distractors of unselected items. It must not be any
+    // answer in the bank (otherwise it would be a second correct option).
+    const extraPool = bank.vocabulary
+      .filter((v) => !items.includes(v))
+      .flatMap((v) => v.distractors)
+      .filter((word) => {
+        const lower = word.toLowerCase();
+        return !usedWords.has(lower) && !allAnswers.has(lower);
+      });
+    const extra = extraPool.length ? extraPool[Math.floor(rng() * extraPool.length)] : undefined;
+    if (extra) {
+      usedWords.add(extra.toLowerCase());
+      words.push(extra);
+    }
+    wordBanks[groupId] = shuffle(words, rng);
     items.forEach((item) => {
       ids.push(
         push({
@@ -229,6 +271,7 @@ export function generatePaper(options: GenerateOptions): Paper {
           stem: item.sentence,
           answerText: item.answer,
           explanation: item.explanation,
+          review: vocabPick.repeated.has(item),
         }),
       );
     });
@@ -245,7 +288,8 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('cloze')) {
     const ids: string[] = [];
-    const [item] = pickItems(bank.cloze, 1, rng, options.difficulty, seen);
+    const clozePick = pickItems(bank.cloze, 1, rng, options.difficulty, seenOrder);
+    const [item] = clozePick.items;
     const groupId = `cloze-${item.id}`;
     contexts[groupId] = { kind: 'passage', title: item.title, text: item.text };
     item.blanks.forEach((blank, index) => {
@@ -264,6 +308,7 @@ export function generatePaper(options: GenerateOptions): Paper {
           answer: mcq.answer,
           answerText: mcq.options[mcq.answer],
           explanation: blank.explanation,
+          review: clozePick.repeated.has(item),
         }),
       );
     });
@@ -280,14 +325,15 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('reading')) {
     const ids: string[] = [];
-    const groups = pickItems(
+    const readingPick = pickItems(
       bank.reading,
       mode === 'full' ? 4 : 2,
       rng,
       options.difficulty,
-      seen,
+      seenOrder,
       idsOfGroup,
     );
+    const groups = readingPick.items;
     groups.forEach((item) => {
       const groupId = `reading-${item.id}`;
       contexts[groupId] = { kind: 'passage', title: item.title, text: item.text };
@@ -307,6 +353,7 @@ export function generatePaper(options: GenerateOptions): Paper {
             answer: mcq.answer,
             answerText: mcq.options[mcq.answer],
             explanation: sub.explanation,
+            review: readingPick.repeated.has(item),
           }),
         );
       });
@@ -324,7 +371,8 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('translation')) {
     const ids: string[] = [];
-    const items = pickItems(bank.translation, 5, rng, options.difficulty, seen);
+    const translationPick = pickItems(bank.translation, 5, rng, options.difficulty, seenOrder);
+    const items = translationPick.items;
     items.forEach((item) => {
       ids.push(
         push({
@@ -339,6 +387,7 @@ export function generatePaper(options: GenerateOptions): Paper {
           reference: item.reference,
           keyPoints: item.keyPoints,
           tips: item.tips,
+          review: translationPick.repeated.has(item),
         }),
       );
     });
@@ -356,7 +405,8 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('summary')) {
     const ids: string[] = [];
-    const [item] = pickItems(bank.summary, 1, rng, options.difficulty, seen);
+    const summaryPick = pickItems(bank.summary, 1, rng, options.difficulty, seenOrder);
+    const [item] = summaryPick.items;
     const groupId = `summary-${item.id}`;
     contexts[groupId] = { kind: 'passage', title: item.title, text: item.text };
     ids.push(
@@ -375,6 +425,7 @@ export function generatePaper(options: GenerateOptions): Paper {
         minWords: item.minWords,
         maxWords: item.maxWords,
         tips: item.tips,
+        review: summaryPick.repeated.has(item),
       }),
     );
     sections.push({
@@ -390,7 +441,8 @@ export function generatePaper(options: GenerateOptions): Paper {
 
   if (wanted('writing')) {
     const ids: string[] = [];
-    const [item] = pickItems(bank.writing, 1, rng, options.difficulty, seen);
+    const writingPick = pickItems(bank.writing, 1, rng, options.difficulty, seenOrder);
+    const [item] = writingPick.items;
     const groupId = `writing-${item.id}`;
     ids.push(
       push({
@@ -409,6 +461,7 @@ export function generatePaper(options: GenerateOptions): Paper {
         minWords: item.minWords,
         maxWords: item.maxWords,
         tips: item.tips,
+        review: writingPick.repeated.has(item),
       }),
     );
     sections.push({

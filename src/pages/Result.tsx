@@ -56,7 +56,7 @@ export default function ResultPage() {
     if (!guardActive()) return;
     const next = generatePaper({ mode: 'section', section, seenIds: loadSeen() });
     const first = next.sections[0].id;
-    saveActive({
+    const draft = {
       paper: next,
       answers: {},
       startedAt: new Date().toISOString(),
@@ -66,14 +66,25 @@ export default function ResultPage() {
       currentSection: first,
       timeBySection: {},
       sectionEnteredAt: Date.now(),
-    });
+      lastActiveAt: Date.now(),
+    };
+    if (!saveActive(draft)) {
+      window.alert('无法保存考试进度（浏览器存储已满或不可用），请清理存储后重试。');
+      return;
+    }
     navigate(`/exam/${next.id}`);
   };
 
-  const startFull = () => {
+  const startPaper = (seed?: number) => {
     if (!guardActive()) return;
-    const next = generatePaper({ mode: 'full', seenIds: loadSeen() });
-    saveActive({
+    const next = generatePaper({
+      mode: paper.mode,
+      section: paper.mode === 'section' ? paper.sectionFilter ?? paper.sections[0].id : undefined,
+      // A fixed seed is meant to reproduce the paper exactly, so do not filter seen ids.
+      seenIds: seed === undefined ? loadSeen() : [],
+      seed,
+    });
+    const draft = {
       paper: next,
       answers: {},
       startedAt: new Date().toISOString(),
@@ -83,9 +94,17 @@ export default function ResultPage() {
       currentSection: next.sections[0].id,
       timeBySection: {},
       sectionEnteredAt: Date.now(),
-    });
+      lastActiveAt: Date.now(),
+    };
+    if (!saveActive(draft)) {
+      window.alert('无法保存考试进度（浏览器存储已满或不可用），请清理存储后重试。');
+      return;
+    }
     navigate(`/exam/${next.id}`);
   };
+
+  const startFull = () => startPaper();
+  const replaySeed = () => startPaper(paper.seed);
 
   return (
     <div className="container result-page">
@@ -163,13 +182,26 @@ export default function ResultPage() {
           </div>
           <div className="section-results">
             {attempt.sectionResults.map((section) => {
-              const tone = section.accuracy >= 0.8 ? 'ok' : section.accuracy >= 0.6 ? 'warn' : 'bad';
+              const own = attempt.results.filter((r) => r.section === section.id);
+              const subjectiveOnly =
+                own.length > 0 &&
+                own.every(
+                  (r) => r.type === 'translation' || r.type === 'summary' || r.type === 'writing',
+                );
+              const rate = section.max ? section.score / section.max : 0;
+              const displayRate = subjectiveOnly
+                ? rate
+                : section.total
+                  ? section.correct / section.total
+                  : 0;
+              const tone = rate >= 0.8 ? 'ok' : rate >= 0.6 ? 'warn' : 'bad';
               return (
                 <div className="section-result-row" key={section.id}>
                   <div className="section-result-name">
                     <strong>{section.name}</strong>
                     <span>
-                      {section.correct}/{section.total} · {Math.round(section.accuracy * 100)}%
+                      {subjectiveOnly ? '得分率' : `${section.correct}/${section.total}`} ·{' '}
+                      {Math.round(displayRate * 100)}%
                     </span>
                   </div>
                   <div className="section-result-bar">
@@ -268,6 +300,9 @@ export default function ResultPage() {
           <Link to={`/review/${attempt.id}`} className="btn btn-ghost">
             逐题复盘
           </Link>
+          <button type="button" className="btn btn-ghost" onClick={replaySeed}>
+            按此种子重新组卷
+          </button>
           <button type="button" className="btn btn-primary" onClick={startFull}>
             再考一套 <ArrowRight size={17} />
           </button>
@@ -275,7 +310,7 @@ export default function ResultPage() {
       </section>
 
       <p className="result-disclaimer">
-        说明：客观题按标准答案判分；翻译、概要、写作采用关键信息和语言特征进行规则初评，不能替代人工阅卷。成绩与解析仅用于练习。
+        说明：客观题按标准答案判分；翻译、概要、写作采用关键信息和语言特征进行规则初评，不能替代人工阅卷。自本版本起，主观题评分加入词数下限、整段复制与句法结构门控，主观板块按得分率统计；历史成绩单保留原评分，不重新计算。成绩与解析仅用于练习。
       </p>
     </div>
   );

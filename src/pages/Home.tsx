@@ -20,6 +20,7 @@ export default function HomePage() {
   const [mode, setMode] = useState<ExamMode>('full');
   const [section, setSection] = useState<SectionId>('reading');
   const [difficulty, setDifficulty] = useState<'mixed' | 'basic' | 'advanced'>('mixed');
+  const [seedInput, setSeedInput] = useState('');
   const [active, setActive] = useState<ActiveDraft | undefined>(() => loadActive());
   const [attempts] = useState(() => loadAttempts());
   const totals = useMemo(() => bankTotals(), []);
@@ -42,6 +43,15 @@ export default function HomePage() {
   };
 
   const start = () => {
+    let seed: number | undefined;
+    if (seedInput.trim()) {
+      const parsed = Number(seedInput.trim());
+      if (!Number.isSafeInteger(parsed) || parsed < 0) {
+        window.alert('种子需为非负整数，或留空使用随机种子。');
+        return;
+      }
+      seed = parsed;
+    }
     if (active) {
       const ok = window.confirm('你还有一场未交卷的考试。开始新的考试会放弃当前进度，确定继续？');
       if (!ok) return;
@@ -51,7 +61,8 @@ export default function HomePage() {
       mode,
       section: mode === 'section' ? section : undefined,
       difficulty,
-      seenIds: loadSeen(),
+      seed,
+      seenIds: seed === undefined ? loadSeen() : [],
     });
     const first = paper.sections[0].id;
     const draft: ActiveDraft = {
@@ -64,8 +75,12 @@ export default function HomePage() {
       currentSection: first,
       timeBySection: {},
       sectionEnteredAt: Date.now(),
+      lastActiveAt: Date.now(),
     };
-    saveActive(draft);
+    if (!saveActive(draft)) {
+      window.alert('无法保存考试进度（浏览器存储已满或不可用），请清理存储后重试。');
+      return;
+    }
     navigate(`/exam/${paper.id}`);
   };
 
@@ -276,22 +291,36 @@ export default function HomePage() {
           )}
 
           <div className="start-footer">
-            <div className="difficulty-picker">
-              <span className="field-label">难度</span>
-              <div className="segmented" role="group" aria-label="难度">
-                {difficultyOptions.map((opt) => (
-                  <button
-                    type="button"
-                    key={opt.value}
-                    className={difficulty === opt.value ? 'segment active' : 'segment'}
-                    onClick={() => setDifficulty(opt.value)}
-                    aria-pressed={difficulty === opt.value}
-                    title={opt.note}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+            <div className="start-options">
+              <div className="difficulty-picker">
+                <span className="field-label">难度</span>
+                <div className="segmented" role="group" aria-label="难度">
+                  {difficultyOptions.map((opt) => (
+                    <button
+                      type="button"
+                      key={opt.value}
+                      className={difficulty === opt.value ? 'segment active' : 'segment'}
+                      onClick={() => setDifficulty(opt.value)}
+                      aria-pressed={difficulty === opt.value}
+                      title={opt.note}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               </div>
+              <label className="seed-picker" htmlFor="paper-seed">
+                <span className="field-label">种子（可选）</span>
+                <input
+                  id="paper-seed"
+                  className="text-input seed-input"
+                  value={seedInput}
+                  onChange={(event) => setSeedInput(event.target.value)}
+                  placeholder="留空则随机"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+              </label>
             </div>
             <div className="start-cta">
               <div className="start-summary">

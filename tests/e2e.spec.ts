@@ -71,6 +71,39 @@ test.describe('Shanghai English mock exam', () => {
     await expect(page.locator('.sheet-cell.answered')).toHaveCount(1);
   });
 
+  test('keeps per-section time across save, exit and resume', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: /生成一套全真模拟卷/ }).first().click();
+    await expect(page).toHaveURL(/\/#\/exam\//);
+
+    await page.waitForTimeout(3200);
+    await page.getByRole('button', { name: /保存并退出/ }).click();
+    await expect(page.getByText('有一场考试尚未交卷')).toBeVisible();
+    const saved = await page.evaluate(() => {
+      const raw = localStorage.getItem('sh-exam.active.v1');
+      if (!raw) throw new Error('missing active draft');
+      return JSON.parse(raw).timeBySection.listening ?? 0;
+    });
+    expect(saved).toBeGreaterThanOrEqual(3);
+
+    await page.getByRole('link', { name: /继续考试/ }).click();
+    await expect(page).toHaveURL(/\/#\/exam\//);
+    await page.waitForTimeout(2200);
+    await page.getByRole('button', { name: /^交卷$/ }).first().click();
+    await page.getByRole('button', { name: /确认交卷/ }).click();
+    await expect(page).toHaveURL(/\/#\/result\//);
+
+    const total = await page.evaluate(() => {
+      const raw = localStorage.getItem('sh-exam.attempts.v1');
+      if (!raw) throw new Error('missing attempts');
+      const list = JSON.parse(raw);
+      return list[0].timeBySection.listening ?? 0;
+    });
+    // 3s before save + 2s after resume; no offline gap, no double counting.
+    expect(total).toBeGreaterThanOrEqual(5);
+    expect(total).toBeLessThan(10);
+  });
+
   test('auto-submits when the timer has expired', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /生成一套全真模拟卷/ }).first().click();
