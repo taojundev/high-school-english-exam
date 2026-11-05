@@ -217,6 +217,15 @@ test('writing-only practice shows an estimate, never a grade or 0 / 0', async ({
   // Review card must state the low-confidence 50% cap next to the 12.5/25 estimate.
   await page.getByRole('link', { name: /逐题复盘/ }).first().click();
   await expect(page).toHaveURL(/\/#\/review\//);
+
+  // The review header is a page one step downstream of the report: it must repeat its rules.
+  const reviewHero = page.locator('.review-hero');
+  await expect(reviewHero).toContainText('主观题估分');
+  await expect(reviewHero).not.toContainText('客观题');
+  await expect(reviewHero).not.toContainText('0/0');
+  await expect(reviewHero).not.toContainText(/卓越|优秀|良好|及格|待提升/);
+  await page.screenshot({ path: 'test-results/r6-writing-review-hero.png', fullPage: true });
+
   const writingItem = page.locator('.review-item').first();
   await expect(writingItem).toContainText('估分');
   await expect(writingItem).toContainText('低置信度：估分再按 50% 封顶');
@@ -228,6 +237,10 @@ test('writing-only practice shows an estimate, never a grade or 0 / 0', async ({
   await expect(firstCard).not.toContainText('待提升');
   await expect(firstCard).not.toContainText('0 / 0');
   await expect(page.locator('.history-stats')).toContainText('—');
+
+  // A pure subjective record never becomes a trend point, so it can never title one "客观题 0/0".
+  await expect(page.locator('.trend-chart title')).toHaveCount(0);
+  await expect(page.locator('.trend-panel')).toContainText('还没有含客观题的记录');
 
   await page.goto('/#/');
   await expect(page.locator('.hero-card')).toContainText('估分');
@@ -257,6 +270,16 @@ test('reading-only practice does not show an empty subjective estimate', async (
   const firstCard = page.locator('.history-card').first();
   await expect(firstCard).not.toContainText('主观估分 0/0');
   await expect(firstCard).not.toContainText('主观估分');
+
+  // The trend tooltip must not paste an empty subjective denominator onto an objective-only record.
+  const trendTitles = await page.locator('.trend-chart title').allTextContents();
+  expect(trendTitles.length).toBeGreaterThan(0);
+  for (const text of trendTitles) {
+    expect(text).toContain('客观题');
+    expect(text).not.toContain('主观估分');
+    expect(text).not.toContain('0/0');
+  }
+  await page.screenshot({ path: 'test-results/r6-reading-trend-tooltip.png', fullPage: true });
 
   await page.goto('/#/');
   await expect(page.locator('.hero-card')).not.toContainText('主观题估分 0/0');

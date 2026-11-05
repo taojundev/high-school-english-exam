@@ -6,7 +6,7 @@ import { SECTION_META } from '../sections';
 import { bankTotals } from '../data';
 import { generatePaper } from '../lib/exam';
 import { formatDate, formatDuration, gradeFor } from '../lib/format';
-import { attemptScoreSplit } from '../lib/scoring';
+import { attemptScoreSplit, hasObjectiveMarks } from '../lib/scoring';
 import { clearActive, loadActive, loadAttempts, loadSeenHistory, saveActive } from '../lib/storage';
 import type { ActiveDraft, ExamMode, SectionId } from '../types';
 
@@ -29,7 +29,7 @@ export default function HomePage() {
   const stats = useMemo(() => {
     const scored = attempts.map((attempt) => ({ attempt, split: attemptScoreSplit(attempt) }));
     // Averages only use papers with objective questions; pure subjective practice is not rated.
-    const ratable = scored.filter((entry) => entry.split.objectiveMax > 0);
+    const ratable = scored.filter((entry) => hasObjectiveMarks(entry.split));
     const ratios = ratable.map((entry) => entry.split.objectiveScore / entry.split.objectiveMax);
     return {
       count: attempts.length,
@@ -90,7 +90,7 @@ export default function HomePage() {
 
   const recent = attempts.slice(0, 3);
   const lastSplit = stats.last ? attemptScoreSplit(stats.last) : undefined;
-  const lastHasObjective = Boolean(lastSplit && lastSplit.objectiveMax > 0);
+  const lastHasObjective = Boolean(lastSplit && hasObjectiveMarks(lastSplit));
   const lastGrade = lastSplit && lastHasObjective ? gradeFor(lastSplit.objectiveScore, lastSplit.objectiveMax) : undefined;
   const lastRatio = lastSplit && lastHasObjective ? lastSplit.objectiveScore / lastSplit.objectiveMax : 0;
 
@@ -407,7 +407,7 @@ export default function HomePage() {
           <div className="recent-grid">
             {recent.map((attempt) => {
               const split = attemptScoreSplit(attempt);
-              const ratable = split.objectiveMax > 0;
+              const ratable = hasObjectiveMarks(split);
               const ratio = ratable ? split.objectiveScore / split.objectiveMax : 0;
               const grade = ratable ? gradeFor(split.objectiveScore, split.objectiveMax) : undefined;
               return (

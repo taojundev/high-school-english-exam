@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Check, X } from '../components/Icons';
 import { EmptyState } from '../components/ui';
 import { formatDate } from '../lib/format';
-import { attemptScoreSplit, isEstimatedResult } from '../lib/scoring';
+import { attemptScoreSplit, hasObjectiveMarks, isEstimatedResult } from '../lib/scoring';
 import { isReviewWrong, reviewBadge } from '../lib/review';
 import { getAttempt } from '../lib/storage';
 import type { Attempt, ExamQuestion, QuestionResult, SectionId } from '../types';
@@ -53,6 +53,7 @@ export default function ReviewPage() {
   }
 
   const split = attemptScoreSplit(attempt);
+  const hasObjective = hasObjectiveMarks(split);
   const wrongCount = attempt.results.filter((r) => isReviewWrong(r)).length;
   const blankCount = attempt.results.filter((r) => !(attempt.answers[r.id] ?? '').trim()).length;
 
@@ -74,7 +75,8 @@ export default function ReviewPage() {
           <span className="kicker">QUESTION REVIEW</span>
           <h1>逐题复盘</h1>
           <p>
-            {attempt.paper.title} · {formatDate(attempt.submittedAt)} · 客观题 {split.objectiveScore}/{split.objectiveMax}
+            {attempt.paper.title} · {formatDate(attempt.submittedAt)}
+            {hasObjective ? ` · 客观题 ${split.objectiveScore}/${split.objectiveMax}` : ''}
             {split.subjectiveMax > 0
               ? ` · 主观题估分 ${split.subjectiveEstimate}/${split.subjectiveMax}（不参与评级）`
               : ''}

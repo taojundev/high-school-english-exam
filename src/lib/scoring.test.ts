@@ -5,7 +5,9 @@ import { buildSuggestions } from './advice';
 import { gradeFor } from './format';
 import {
   countWords,
+  hasObjectiveMarks,
   isEstimatedResult,
+  isSubjectiveOnly,
   keyPointCoverage,
   scoreAttempt,
   attemptScoreSplit,
@@ -768,6 +770,42 @@ describe('scoring', () => {
     expect(isEstimatedResult(legacyObjective)).toBe(false);
     expect(reviewBadge(legacyObjective, true).icon).toBe('cross');
     expect(isReviewWrong(legacyObjective)).toBe(true);
+  });
+
+  it('decides ratability from the objective maximum only', () => {
+    const make = (over: Partial<QuestionResult> & Pick<QuestionResult, 'id' | 'section' | 'type' | 'points' | 'earned'>): QuestionResult => ({
+      sourceId: over.id,
+      number: 1,
+      tags: [],
+      difficulty: 2,
+      ...over,
+    });
+    const objectiveOnly = scoreSplit([
+      make({ id: 'o-1', section: 'reading', type: 'mcq', points: 2, earned: 2, graded: 'objective', correct: true }),
+    ]);
+    expect(objectiveOnly.objectiveMax).toBe(2);
+    expect(hasObjectiveMarks(objectiveOnly)).toBe(true);
+    expect(isSubjectiveOnly(objectiveOnly)).toBe(false);
+
+    const subjectiveOnly = scoreSplit([
+      make({ id: 's-1', section: 'writing', type: 'writing', points: 25, earned: 20, graded: 'estimated' }),
+    ]);
+    expect(subjectiveOnly.objectiveMax).toBe(0);
+    expect(hasObjectiveMarks(subjectiveOnly)).toBe(false);
+    expect(isSubjectiveOnly(subjectiveOnly)).toBe(true);
+
+    const mixed = scoreSplit([
+      make({ id: 'o-2', section: 'reading', type: 'mcq', points: 2, earned: 1, graded: 'objective', correct: false }),
+      make({ id: 's-2', section: 'summary', type: 'summary', points: 10, earned: 8, graded: 'estimated' }),
+    ]);
+    expect(hasObjectiveMarks(mixed)).toBe(true);
+    expect(isSubjectiveOnly(mixed)).toBe(false);
+
+    // An empty split has neither denominator, so it is neither ratable nor subjective-only
+    // and every consumer must fall back to its "no record" wording.
+    const empty = scoreSplit([]);
+    expect(hasObjectiveMarks(empty)).toBe(false);
+    expect(isSubjectiveOnly(empty)).toBe(false);
   });
 
   it('never lets a high subjective estimate lift the objective rating advice', () => {

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, Chart, Trash } from '../components/Icons';
 import { EmptyState, Pill, ProgressBar } from '../components/ui';
 import { formatDate, formatDuration, gradeFor } from '../lib/format';
-import { attemptScoreSplit } from '../lib/scoring';
+import { attemptScoreSplit, hasObjectiveMarks } from '../lib/scoring';
 import { clearAttempts, deleteAttempt, loadAttempts } from '../lib/storage';
 import type { Attempt } from '../types';
 
@@ -12,7 +12,7 @@ export default function HistoryPage() {
 
   const stats = useMemo(() => {
     // Pure subjective practice has no objective denominator, so it cannot affect averages or the trend.
-    const ratable = attempts.filter((attempt) => attemptScoreSplit(attempt).objectiveMax > 0);
+    const ratable = attempts.filter((attempt) => hasObjectiveMarks(attemptScoreSplit(attempt)));
     const ratios = ratable.map((attempt) => {
       const split = attemptScoreSplit(attempt);
       return split.objectiveScore / split.objectiveMax;
@@ -116,7 +116,7 @@ export default function HistoryPage() {
         <div className="history-list">
           {attempts.map((attempt) => {
             const split = attemptScoreSplit(attempt);
-            const ratable = split.objectiveMax > 0;
+            const ratable = hasObjectiveMarks(split);
             const ratio = ratable ? split.objectiveScore / split.objectiveMax : 0;
             const grade = ratable ? gradeFor(split.objectiveScore, split.objectiveMax) : undefined;
             return (
@@ -222,8 +222,13 @@ function TrendChart({ attempts }: { attempts: Attempt[] }) {
           <g key={point.attempt.id}>
             <circle cx={point.x} cy={point.y} r={5} className="trend-dot" />
             <title>
-              {formatDate(point.attempt.submittedAt)} · 客观题 {point.split.objectiveScore}/{point.split.objectiveMax} · 主观估分{' '}
-              {point.split.subjectiveEstimate}/{point.split.subjectiveMax}
+              {formatDate(point.attempt.submittedAt)}
+              {hasObjectiveMarks(point.split)
+                ? ` · 客观题 ${point.split.objectiveScore}/${point.split.objectiveMax}`
+                : ''}
+              {point.split.subjectiveMax > 0
+                ? ` · 主观估分 ${point.split.subjectiveEstimate}/${point.split.subjectiveMax}`
+                : ''}
             </title>
           </g>
         ))}
