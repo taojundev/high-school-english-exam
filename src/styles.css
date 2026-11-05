@@ -4356,6 +4356,11 @@ svg {
   line-height: 1.6;
 }
 
+/* 首页脚注本身带 .container，需要保留容器水平居中，只覆盖上下间距 */
+.container.stats-note {
+  margin: 8px auto 0;
+}
+
 .review-cap-note {
   max-width: 150px;
   color: #7b581d;
