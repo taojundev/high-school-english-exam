@@ -11,14 +11,28 @@ import { generatePaper } from './exam';
 import { scoreAttempt, type AttemptMeta } from './scoring';
 import { loadSeenHistory } from './storage';
 
-/** Drills cover objective sections only; translation/summary/writing have no unique answer. */
+/**
+ * Drill sections, in menu order. Summary writing and guided writing stay out: they have no
+ * comparable sample answer at all, so even reference mode would mislead.
+ */
 export const DRILL_SECTIONS: SectionId[] = [
   'listening',
   'grammar',
   'vocabulary',
   'cloze',
   'reading',
+  'translation',
 ];
+
+/**
+ * Reference-mode sections are practised but never marked (D5): the user answers, then reads the
+ * reference answer and compares by themselves. They must never reach scoreAttempt/judgeAnswer.
+ */
+export const REFERENCE_SECTIONS: SectionId[] = ['translation'];
+
+export function isReferenceSection(section: SectionId): boolean {
+  return REFERENCE_SECTIONS.includes(section);
+}
 
 export const DRILL_STORAGE_KEY = 'sh-exam.drill.v1';
 
@@ -36,6 +50,8 @@ export interface DrillSectionInfo {
   questions: number;
   points: number;
   minutes: number;
+  /** False for reference mode (翻译): the UI shows 「不判分」 and never a point value (D7). */
+  graded: boolean;
 }
 
 /**
@@ -53,6 +69,7 @@ export const DRILL_SECTION_INFO: DrillSectionInfo[] = DRILL_SECTIONS.map((id) =>
     questions: paper.questions.length,
     points: paper.maxScore,
     minutes: meta.practiceMinutes,
+    graded: !isReferenceSection(id),
   };
 });
 
@@ -195,12 +212,45 @@ export function judgeAnswer(paper: Paper, question: ExamQuestion, raw: string): 
   };
 }
 
+/** 'reference' = 不判分, only the reference answer is shown. Legacy records have no kind. */
+export type DrillRecordKind = 'graded' | 'reference';
+
+/**
+ * What a reference-mode section reveals: the reference answer and the user's own text, nothing
+ * else. Deliberately a separate shape from DrillFeedback so no verdict/score can be rendered by
+ * accident (D5) – there is no `correct`, no `earned` and no `guidance` field to read.
+ */
+export interface ReferenceFeedback {
+  questionId: string;
+  kind: 'reference';
+  /** 参考译文 / 范文，永远是题库里写好的那一份。 */
+  referenceText: string;
+  userText: string;
+}
+
+/** Never judges: reference sections are compared by the user, not by the scorer. */
+export function referenceFeedback(question: ExamQuestion, raw: string): ReferenceFeedback {
+  if (!isReferenceSection(question.section)) {
+    throw new Error(`该板块不提供参考模式: ${question.section}`);
+  }
+  return {
+    questionId: question.id,
+    kind: 'reference',
+    referenceText: question.reference ?? question.sample ?? '',
+    userText: raw,
+  };
+}
+
 /** Slim record: never stores the paper (it embeds whole passages and scripts). */
 export interface DrillRecord {
   id: string;
   section: SectionId;
+  /** Records saved before 翻译 existed have no `kind`; they are graded records (D6). */
+  kind?: DrillRecordKind;
   at: string;
   questions: number;
+  /** How many questions were finished (judged, or revealed in reference mode). */
+  answered: number;
   correct: number;
   earned: number;
   points: number;
@@ -208,11 +258,18 @@ export interface DrillRecord {
   wrongTags: string[];
 }
 
+/** Old records predate `kind`; reading through this helper keeps them graded, no migration. */
+export function drillRecordKind(record: Pick<DrillRecord, 'kind'>): DrillRecordKind {
+  return record.kind === 'reference' ? 'reference' : 'graded';
+}
+
 export interface DrillRecordInput {
   section: SectionId;
   questions: ExamQuestion[];
   /** Per-question verdicts keyed by question id; unanswered questions are not counted as correct. */
-  verdicts: Record<string, { correct: boolean; earned: number; points: number }>;
+  verdicts?: Record<string, { correct: boolean; earned: number; points: number }>;
+  /** Finished question count; required for reference mode, derived from verdicts when graded. */
+  answered?: number;
   elapsedSec: number;
   at?: string;
   id?: string;
@@ -221,11 +278,14 @@ export interface DrillRecordInput {
 export function buildDrillRecord({
   section,
   questions,
-  verdicts,
+  verdicts = {},
+  answered: answeredInput,
   elapsedSec,
   at,
   id,
 }: DrillRecordInput): DrillRecord {
+  const stamp = at ?? new Date().toISOString();
+  const recordId = id ?? `drill-${Date.parse(stamp).toString(36)}-${Math.floor(Math.random() * 1e5).toString(36)}`;
   const answered = questions.filter((q) => verdicts[q.id]);
   const correct = answered.filter((q) => verdicts[q.id]?.correct).length;
   const earned = Math.round(answered.reduce((sum, q) => sum + (verdicts[q.id]?.earned ?? 0), 0) * 100) / 100;
@@ -233,12 +293,31 @@ export function buildDrillRecord({
   const wrongTags = answered
     .filter((q) => !verdicts[q.id]?.correct)
     .flatMap((q) => q.tags);
-  const stamp = at ?? new Date().toISOString();
+
+  // 不判分板块不做分数口径（D6）：翻译只记完成题数，绝不造出 0 分/0 正确率这种假数据。
+  if (isReferenceSection(section)) {
+    return {
+      id: recordId,
+      section,
+      kind: 'reference',
+      at: stamp,
+      questions: questions.length,
+      answered: Math.min(questions.length, Math.max(0, Math.round(answeredInput ?? answered.length))),
+      correct: 0,
+      earned: 0,
+      points: 0,
+      elapsedSec: Math.max(0, Math.round(elapsedSec)),
+      wrongTags: [],
+    };
+  }
+
   return {
-    id: id ?? `drill-${Date.parse(stamp).toString(36)}-${Math.floor(Math.random() * 1e5).toString(36)}`,
+    id: recordId,
     section,
+    kind: 'graded',
     at: stamp,
     questions: questions.length,
+    answered: answered.length,
     correct,
     earned,
     points,

@@ -10,12 +10,16 @@ import {
   buildDrillPaper,
   buildDrillRecord,
   drillGuidance,
+  drillRecordKind,
   groupWrongTags,
   isDrillSection,
+  isReferenceSection,
   judgeAnswer,
   judgeQuestion,
   loadDrillRecords,
+  referenceFeedback,
   saveDrillRecord,
+  type DrillRecord,
 } from './drill';
 import type { ExamQuestion, Paper, SectionId } from '../types';
 
@@ -78,15 +82,23 @@ afterEach(() => {
 });
 
 describe('drill set building', () => {
-  it('keeps the practice-mode question count and grouping for all five sections', () => {
+  it('keeps the practice-mode question count and grouping for all six sections', () => {
     const expected: Record<string, number> = {
       listening: 9,
       grammar: 10,
       vocabulary: 10,
       cloze: 15,
       reading: 10,
+      translation: 5,
     };
-    expect(DRILL_SECTIONS).toEqual(['listening', 'grammar', 'vocabulary', 'cloze', 'reading']);
+    expect(DRILL_SECTIONS).toEqual([
+      'listening',
+      'grammar',
+      'vocabulary',
+      'cloze',
+      'reading',
+      'translation',
+    ]);
 
     for (const section of DRILL_SECTIONS) {
       for (const seed of [1, 2, 3, 11]) {
@@ -108,13 +120,20 @@ describe('drill set building', () => {
 
   it('refuses subjective sections and subjective questions', () => {
     expect(isDrillSection('reading')).toBe(true);
-    expect(isDrillSection('translation')).toBe(false);
+    expect(isDrillSection('translation')).toBe(true);
+    expect(isDrillSection('summary')).toBe(false);
     expect(isDrillSection('writing')).toBe(false);
-    expect(() => buildDrillPaper('translation', { seed: 1, seenIds: [] })).toThrow(/单项测试/);
+    expect(() => buildDrillPaper('summary', { seed: 1, seenIds: [] })).toThrow(/单项测试/);
+    expect(() => buildDrillPaper('writing', { seed: 1, seenIds: [] })).toThrow(/单项测试/);
 
+    // 翻译可以练（参考模式），但永远不能进入判分路径。
     const translation = generatePaper({ mode: 'section', section: 'translation', seed: 1 });
-    expect(() => judgeQuestion(translation, translation.questions[0], 'anything')).toThrow(/主观题/);
-    expect(() => judgeAnswer(translation, translation.questions[0], 'anything')).toThrow(/主观题/);
+    expect(translation.questions).toHaveLength(5);
+    for (const question of translation.questions) {
+      expect(question.type).toBe('translation');
+      expect(() => judgeQuestion(translation, question, 'anything')).toThrow(/主观题/);
+      expect(() => judgeAnswer(translation, question, 'anything')).toThrow(/主观题/);
+    }
   });
 });
 
@@ -326,6 +345,130 @@ describe('vocabulary drills keep the shared word bank', () => {
       expect(question.options).toBeUndefined();
       expect(question.groupId).toBe(bankIds[0]);
     }
+  });
+});
+
+/**
+ * 翻译是参考模式（D5/D6/D7）：可以练、可以给参考译文，但绝不判分，也绝不把不判分的板块
+ * 拟合成「0 分 / 0% 正确率」这种假数据。
+ */
+describe('translation drill runs in reference mode', () => {
+  it('is a drill section with five questions and is marked as not graded', () => {
+    expect(isDrillSection('translation')).toBe(true);
+    expect(isReferenceSection('translation')).toBe(true);
+    for (const section of ['listening', 'grammar', 'vocabulary', 'cloze', 'reading'] as SectionId[]) {
+      expect(isReferenceSection(section)).toBe(false);
+    }
+
+    const paper = buildDrillPaper('translation', { seed: 3, seenIds: [] });
+    expect(paper.questions).toHaveLength(5);
+    expect(paper.questions.every((q) => q.type === 'translation')).toBe(true);
+
+    const info = DRILL_SECTION_INFO.find((item) => item.id === 'translation');
+    expect(info?.graded).toBe(false);
+    expect(info?.questions).toBe(5);
+    for (const graded of DRILL_SECTION_INFO.filter((item) => item.id !== 'translation')) {
+      expect(graded.graded).toBe(true);
+    }
+  });
+
+  it('reveals the reference translation plus the user text and nothing gradeable', () => {
+    const paper = buildDrillPaper('translation', { seed: 2, seenIds: [] });
+    const question = paper.questions[0];
+    expect((question.reference ?? '').length).toBeGreaterThan(10);
+
+    const feedback = referenceFeedback(question, '  My own English sentence.  ');
+    expect(feedback.kind).toBe('reference');
+    expect(feedback.questionId).toBe(question.id);
+    expect(feedback.referenceText).toBe(question.reference);
+    // 原样保存用户输入，不做任何归一化或判定。
+    expect(feedback.userText).toBe('  My own English sentence.  ');
+    // 拒绝判分的形状：没有对错、得分、指导意见字段可读。
+    expect(feedback).not.toHaveProperty('correct');
+    expect(feedback).not.toHaveProperty('earned');
+    expect(feedback).not.toHaveProperty('guidance');
+
+    // 客观题不能走参考模式（反向护栏）。
+    const reading = buildDrillPaper('reading', { seed: 1, seenIds: [] });
+    expect(() => referenceFeedback(reading.questions[0], 'x')).toThrow(/参考模式/);
+  });
+
+  it('records a reference run without fabricating scores and leaves the draft alone', () => {
+    const draftSentinel = JSON.stringify({ id: 'active-draft-sentinel', answers: { q1: 'A' } });
+    const store = memoryStorage();
+    store.setItem('sh-exam.active.v1', draftSentinel);
+    vi.stubGlobal('window', { localStorage: store });
+
+    const paper = buildDrillPaper('translation', { seed: 5, seenIds: [] });
+    const record = buildDrillRecord({
+      section: 'translation',
+      questions: paper.questions,
+      answered: 4,
+      elapsedSec: 200.6,
+      at: '2026-03-03T10:00:00.000Z',
+      id: 'drill-reference-1',
+    });
+    expect(record.kind).toBe('reference');
+    expect(record.section).toBe('translation');
+    expect(record.questions).toBe(5);
+    expect(record.answered).toBe(4);
+    // 不判分板块不做分数口径：没有得分、没有正确率、没有错题考点。
+    expect(record.correct).toBe(0);
+    expect(record.earned).toBe(0);
+    expect(record.points).toBe(0);
+    expect(record.wrongTags).toEqual([]);
+    expect(record.elapsedSec).toBe(201);
+
+    expect(saveDrillRecord(record)).toBe(true);
+    expect(loadDrillRecords()[0].kind).toBe('reference');
+    // 仍然只写在 drill key 里，草稿字节不变。
+    expect(window.localStorage.getItem('sh-exam.attempts.v1')).toBeNull();
+    expect(store.getItem('sh-exam.active.v1')).toBe(draftSentinel);
+    expect(loadAttempts()).toEqual([]);
+
+    // answered 不会超过题量。
+    const over = buildDrillRecord({
+      section: 'translation',
+      questions: paper.questions,
+      answered: 99,
+      elapsedSec: 1,
+    });
+    expect(over.answered).toBe(5);
+  });
+
+  it('keeps graded records shaped as before and reads legacy records as graded', () => {
+    const paper = buildDrillPaper('reading', { seed: 4, seenIds: [] });
+    const record = buildDrillRecord({
+      section: 'reading',
+      questions: paper.questions,
+      verdicts: { [paper.questions[0].id]: { correct: true, earned: 2, points: 2 } },
+      elapsedSec: 30,
+      at: '2026-04-04T10:00:00.000Z',
+      id: 'drill-graded-1',
+    });
+    expect(record.kind).toBe('graded');
+    expect(record.correct).toBe(1);
+    expect(record.earned).toBe(2);
+    expect(record.points).toBe(paper.maxScore);
+    expect(record.answered).toBe(1);
+    expect(drillRecordKind(record)).toBe('graded');
+
+    // 旧记录没有 kind（也没有 answered）：读取时按 graded 处理，不迁移、不改存储键。
+    const legacy = {
+      id: 'legacy-drill',
+      section: 'grammar',
+      at: '2026-01-01T00:00:00.000Z',
+      questions: 10,
+      correct: 8,
+      earned: 16,
+      points: 20,
+      elapsedSec: 90,
+      wrongTags: ['语法-时态'],
+    } as DrillRecord;
+    expect(legacy).not.toHaveProperty('kind');
+    expect(drillRecordKind(legacy)).toBe('graded');
+    // 旧记录项仍然进 成绩记录吗？不进：drill 记录永不进成绩记录（D2）。
+    expect(drillRecordKind({ kind: 'reference' })).toBe('reference');
   });
 });
 

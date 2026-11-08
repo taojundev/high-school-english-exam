@@ -4835,6 +4835,40 @@ svg {
   font-weight: 600;
 }
 
+/* 参考模式（翻译）：只对照参考译文，不带对错配色，避免误读成判定。 */
+.drill-feedback.reference {
+  border-color: rgba(31, 95, 91, 0.24);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.drill-reference-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--teal-soft);
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.drill-translation-hint {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.drill-reference-note {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--gold);
+  border-radius: 0 8px 8px 0;
+  background: var(--gold-soft);
+  color: #7b581d;
+  font-size: 0.78rem;
+  line-height: 1.7;
+}
+
 .drill-summary-actions {
   display: flex;
   flex-wrap: wrap;

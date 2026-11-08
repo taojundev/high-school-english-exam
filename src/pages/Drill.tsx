@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Check, Clock, Play, Stop, X } from '../components/Icons';
 import { ProgressBar } from '../components/ui';
+import { WordCounter } from './Exam';
 import { SECTION_MAP } from '../sections';
 import { paperSourceIds } from '../lib/exam';
 import { formatClock, formatDate, percent } from '../lib/format';
@@ -12,13 +13,17 @@ import {
   DRILL_SECTION_INFO,
   buildDrillPaper,
   buildDrillRecord,
+  drillRecordKind,
   groupWrongTags,
+  isReferenceSection,
   judgeAnswer,
   loadDrillRecords,
+  referenceFeedback,
   saveDrillRecord,
   type DrillFeedback,
   type DrillRecord,
   type DrillSectionInfo,
+  type ReferenceFeedback,
 } from '../lib/drill';
 import type { ExamQuestion, Paper, QuestionContext, SectionId } from '../types';
 
@@ -30,6 +35,8 @@ export default function DrillPage() {
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [feedback, setFeedback] = useState<Record<string, DrillFeedback>>({});
+  // 参考模式（翻译）单独存放：与 DrillFeedback 类型上互不相通，渲染路径也就不会串（D5）。
+  const [references, setReferences] = useState<Record<string, ReferenceFeedback>>({});
   const [record, setRecord] = useState<DrillRecord | null>(null);
   const [startedAt, setStartedAt] = useState(0);
   const [now, setNow] = useState(() => Date.now());
@@ -70,6 +77,7 @@ export default function DrillPage() {
       setIndex(0);
       setAnswers({});
       setFeedback({});
+      setReferences({});
       setRecord(null);
       setStartedAt(stamp);
       setNow(stamp);
@@ -91,6 +99,7 @@ export default function DrillPage() {
     setPaper(null);
     setRecord(null);
     setFeedback({});
+    setReferences({});
     setAnswers({});
     setRecords(loadDrillRecords());
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
@@ -98,20 +107,26 @@ export default function DrillPage() {
 
   const current = paper && !record ? paper.questions[index] : undefined;
   const revealed = current ? feedback[current.id] : undefined;
+  const revealedReference = current ? references[current.id] : undefined;
   const total = paper?.questions.length ?? 0;
+  const revealedCount = Object.keys(feedback).length + Object.keys(references).length;
   const elapsedSec = startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0;
 
   const answer = (question: ExamQuestion, value: string) => {
-    if (feedback[question.id]) return; // locked once revealed
+    if (feedback[question.id] || references[question.id]) return; // locked once revealed
     setAnswers((prev) => ({ ...prev, [question.id]: value }));
   };
 
   const reveal = () => {
     if (!paper || !current) return;
     const raw = answers[current.id] ?? '';
-    if (!raw.trim() || feedback[current.id]) return;
-    const judged = judgeAnswer(paper, current, raw);
-    setFeedback((prev) => ({ ...prev, [current.id]: judged }));
+    if (!raw.trim() || feedback[current.id] || references[current.id]) return;
+    // 参考模式只给出参考译文，不走 scoreAttempt，也不产生任何判定或评分（D5）。
+    if (isReferenceSection(current.section)) {
+      setReferences((prev) => ({ ...prev, [current.id]: referenceFeedback(current, raw) }));
+    } else {
+      setFeedback((prev) => ({ ...prev, [current.id]: judgeAnswer(paper, current, raw) }));
+    }
     setQuestionElapsed((prev) => ({
       ...prev,
       [current.id]: Math.max(0, Math.round((Date.now() - questionStart) / 1000)),
@@ -121,6 +136,7 @@ export default function DrillPage() {
   const finish = useCallback(() => {
     if (!paper || savedRef.current) return;
     savedRef.current = true;
+    const section = paper.sectionFilter ?? paper.sections[0].id;
     const verdicts = Object.fromEntries(
       Object.entries(feedback).map(([id, item]) => [
         id,
@@ -128,9 +144,10 @@ export default function DrillPage() {
       ]),
     );
     const built = buildDrillRecord({
-      section: paper.sectionFilter ?? paper.sections[0].id,
+      section,
       questions: paper.questions,
       verdicts,
+      answered: Object.keys(feedback).length + Object.keys(references).length,
       elapsedSec: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
     });
     setSaveFailed(!saveDrillRecord(built));
@@ -141,7 +158,7 @@ export default function DrillPage() {
     stopAudio();
     stopSpeaking();
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-  }, [feedback, paper, startedAt, stopAudio]);
+  }, [feedback, references, paper, startedAt, stopAudio]);
 
   const advance = () => {
     if (!paper) return;
@@ -195,7 +212,7 @@ export default function DrillPage() {
             <h1>单项测试</h1>
             <p>
               一题一屏，做完立刻对答案。先自己作答，再点「查看答案」，看判定、正确答案、解析和按考点的指导意见。
-              每一题对完答案就锁定，不能改答。
+              每一题对完答案就锁定，不能改答。翻译另走参考模式：写完译文只看参考译文，不判分。
             </p>
           </div>
         </header>
@@ -207,23 +224,34 @@ export default function DrillPage() {
         </div>
 
         <p className="drill-excluded">
-          翻译、概要写作、指导性写作没有唯一答案，不做逐题判定：请到首页「专项训练」整块作答，再看参考译文与估分。
+          翻译已纳入单项测试，但翻译不判分、只给参考译文，请自己对照。概要写作与指导性写作没有可对照的范文，仍不做单项测试：请到首页「专项训练」整块作答。
         </p>
 
         {records.length > 0 ? (
           <section className="drill-recent" aria-label="最近练习">
             <div className="drill-recent-head">
               <h2>最近练习</h2>
-              <span>只记录板块、正确率与用时，不计入成绩记录与评级</span>
+              <span>只记录板块、结果与用时，不计入成绩记录与评级</span>
             </div>
             <ul>
               {records.slice(0, 5).map((item) => (
                 <li key={item.id} className="drill-recent-row">
                   <strong>{SECTION_MAP[item.section]?.name ?? item.section}</strong>
-                  <span>
-                    {item.correct}/{item.questions} 题 · {formatScore(item.earned)}/{item.points} 分
-                  </span>
-                  <span>{percent(item.points > 0 ? item.earned / item.points : 0)}</span>
+                  {drillRecordKind(item) === 'reference' ? (
+                    <>
+                      <span>
+                        完成 {item.answered ?? item.questions} 题 · 用时 {formatClock(item.elapsedSec)}
+                      </span>
+                      <span>不判分</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        {item.correct}/{item.questions} 题 · {formatScore(item.earned)}/{item.points} 分
+                      </span>
+                      <span>{percent(item.points > 0 ? item.earned / item.points : 0)}</span>
+                    </>
+                  )}
                   <time>{formatDate(item.at)}</time>
                 </li>
               ))}
@@ -235,6 +263,7 @@ export default function DrillPage() {
   }
 
   if (record) {
+    const reference = drillRecordKind(record) === 'reference';
     const accuracy = record.points > 0 ? record.earned / record.points : 0;
     const wrong = groupWrongTags(record.wrongTags);
     return (
@@ -254,41 +283,62 @@ export default function DrillPage() {
           </div>
         ) : null}
 
-        <section className="drill-summary" aria-label="本节成绩">
-          <div className="drill-summary-stat">
-            <span>正确率</span>
-            <strong>{percent(accuracy)}</strong>
-            <small>
-              答对 {record.correct}/{record.questions} 题 · {formatScore(record.earned)}/{record.points} 分
-            </small>
-          </div>
-          <div className="drill-summary-stat">
-            <span>用时</span>
-            <strong>{formatClock(record.elapsedSec)}</strong>
-            <small>从开始本节到点「完成本节」的总时长</small>
-          </div>
-          <div className="drill-summary-stat">
-            <span>错题考点</span>
-            <strong>{wrong.reduce((sum, item) => sum + item.count, 0)}</strong>
-            <small>{wrong.length ? `${wrong.length} 个考点` : '本轮没有错题'}</small>
-          </div>
-        </section>
+        {reference ? (
+          <section className="drill-summary" aria-label="本节完成情况">
+            <div className="drill-summary-stat">
+              <span>完成进度</span>
+              <strong>
+                完成 {record.answered}/{record.questions} 题
+              </strong>
+              <small>每题看过参考译文就算完成</small>
+            </div>
+            <div className="drill-summary-stat">
+              <span>用时</span>
+              <strong>{formatClock(record.elapsedSec)}</strong>
+              <small>从开始本节到点「完成本节」的总时长</small>
+            </div>
+          </section>
+        ) : (
+          <section className="drill-summary" aria-label="本节成绩">
+            <div className="drill-summary-stat">
+              <span>正确率</span>
+              <strong>{percent(accuracy)}</strong>
+              <small>
+                答对 {record.correct}/{record.questions} 题 · {formatScore(record.earned)}/{record.points} 分
+              </small>
+            </div>
+            <div className="drill-summary-stat">
+              <span>用时</span>
+              <strong>{formatClock(record.elapsedSec)}</strong>
+              <small>从开始本节到点「完成本节」的总时长</small>
+            </div>
+            <div className="drill-summary-stat">
+              <span>错题考点</span>
+              <strong>{wrong.reduce((sum, item) => sum + item.count, 0)}</strong>
+              <small>{wrong.length ? `${wrong.length} 个考点` : '本轮没有错题'}</small>
+            </div>
+          </section>
+        )}
 
-        <section className="drill-wrong" aria-label="错题考点汇总">
-          <h2>错题考点汇总</h2>
-          {wrong.length ? (
-            <ul>
-              {wrong.map((item) => (
-                <li key={item.tag}>
-                  <span className="drill-tag">{item.tag}</span>
-                  <span>错 {item.count} 次</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p>本轮全部答对，可以直接换一个板块，或把难度调高再来一组。</p>
-          )}
-        </section>
+        {reference ? (
+          <p className="drill-reference-note">翻译不判分，请对照参考译文自查；错与不错由你自己判断。</p>
+        ) : (
+          <section className="drill-wrong" aria-label="错题考点汇总">
+            <h2>错题考点汇总</h2>
+            {wrong.length ? (
+              <ul>
+                {wrong.map((item) => (
+                  <li key={item.tag}>
+                    <span className="drill-tag">{item.tag}</span>
+                    <span>错 {item.count} 次</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>本轮全部答对，可以直接换一个板块，或把难度调高再来一组。</p>
+            )}
+          </section>
+        )}
 
         <div className="drill-summary-actions">
           <button type="button" className="btn btn-primary" onClick={() => start(record.section)}>
@@ -327,8 +377,9 @@ export default function DrillPage() {
     : [];
   const isListening = current.section === 'listening';
   const isPassage = current.section === 'cloze' || current.section === 'reading';
+  const isReference = isReferenceSection(current.section);
   const answered = Boolean((answers[current.id] ?? '').trim());
-  const locked = Boolean(revealed);
+  const locked = Boolean(revealed || revealedReference);
 
   return (
     <div className="container drill-page">
@@ -341,7 +392,8 @@ export default function DrillPage() {
             <span className="kicker">单项测试 · {SECTION_MAP[current.section].en}</span>
             <h1>{SECTION_MAP[current.section].name}</h1>
             <p>
-              第 {index + 1} / {total} 题 · 本题 {current.points} 分 · 一题一屏，答完再看答案
+              第 {index + 1} / {total} 题 · {isReference ? '不判分' : `本题 ${current.points} 分`} · 一题一屏，答完再看
+              {isReference ? '参考译文' : '答案'}
             </p>
           </div>
         </div>
@@ -354,7 +406,7 @@ export default function DrillPage() {
           <div className="drill-progress">
             <ProgressBar value={index + (locked ? 1 : 0)} max={total} tone="ok" />
             <span>
-              已答 {Object.keys(feedback).length}/{total}
+              已答 {revealedCount}/{total}
             </span>
           </div>
         </div>
@@ -426,6 +478,11 @@ export default function DrillPage() {
                 locked={locked}
                 onChange={(value) => answer(current, value)}
               />
+            ) : current.type === 'translation' ? (
+              <>
+                <p className="translation-prompt">{current.stem}</p>
+                <p className="drill-translation-hint">把上面这句话译成英语，写完再对照参考译文。</p>
+              </>
             ) : (
               <p>{current.stem}</p>
             )}
@@ -474,6 +531,25 @@ export default function DrillPage() {
             />
           </div>
         ) : null}
+
+        {current.type === 'translation' ? (
+          <div className="writing-area">
+            <textarea
+              id={`drill-translation-${current.id}`}
+              value={answers[current.id] ?? ''}
+              onChange={(event) => answer(current, event.target.value)}
+              rows={3}
+              placeholder="写下你的英文翻译……"
+              spellCheck={false}
+              readOnly={locked}
+              aria-label="你的译文"
+            />
+            <div className="writing-meta">
+              <WordCounter text={answers[current.id] ?? ''} />
+              <span>{locked ? '已看过参考译文' : '不判分，只给参考译文'}</span>
+            </div>
+          </div>
+        ) : null}
       </article>
 
       <div className="drill-actions">
@@ -483,7 +559,13 @@ export default function DrillPage() {
           onClick={reveal}
           disabled={!answered || locked}
         >
-          {locked ? '已查看答案' : '查看答案'}
+          {locked
+            ? isReference
+              ? '已查看参考译文'
+              : '已查看答案'
+            : isReference
+              ? '查看参考译文'
+              : '查看答案'}
         </button>
         {locked ? (
           <button type="button" className="btn btn-ghost" onClick={advance}>
@@ -492,16 +574,17 @@ export default function DrillPage() {
           </button>
         ) : (
           <span className="drill-hint">
-            {answered ? '先自己确认一遍，再查看答案；查看后本题锁定。' : '先在本题作答，「查看答案」才会可用。'}
+            {answered
+              ? `先自己确认一遍，再查看${isReference ? '参考译文' : '答案'}；查看后本题锁定。`
+              : `先在本题作答，「查看${isReference ? '参考译文' : '答案'}」才会可用。`}
           </span>
         )}
       </div>
 
       {revealed ? (
-        <RevealCard
-          feedback={revealed}
-          elapsed={questionElapsed[current.id] ?? 0}
-        />
+        <RevealCard feedback={revealed} elapsed={questionElapsed[current.id] ?? 0} />
+      ) : revealedReference ? (
+        <ReferenceCard reference={revealedReference} elapsed={questionElapsed[current.id] ?? 0} />
       ) : null}
     </div>
   );
@@ -515,7 +598,8 @@ function DrillCard({ info, onStart }: { info: DrillSectionInfo; onStart: () => v
       <p>{info.blurb}</p>
       <div className="drill-card-facts">
         <span>{info.questions} 题</span>
-        <span>{info.points} 分</span>
+        {/* 不判分板块不显示分值（D7）：写「15 分」却不评分就是误导。 */}
+        <span>{info.graded ? `${info.points} 分` : '不判分'}</span>
         <span>建议 {info.minutes} 分钟</span>
       </div>
       <button
@@ -576,6 +660,28 @@ function RevealCard({ feedback, elapsed }: { feedback: DrillFeedback; elapsed: n
             考点：{feedback.guidance.tags.join(' · ') || '未标注'}。
           </span>
         ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** 参考模式（翻译）的揭示卡：只有参考译文、你的译文与本题用时，没有任何判定或评分（D5）。 */
+function ReferenceCard({ reference, elapsed }: { reference: ReferenceFeedback; elapsed: number }) {
+  return (
+    <section className="drill-feedback reference" aria-label="参考译文对照">
+      <div className="drill-verdict">
+        <span className="drill-reference-tag">参考译文</span>
+        <span className="drill-verdict-meta">本题用时 {formatClock(elapsed)} · 翻译不判分</span>
+      </div>
+      <div className="subjective-compare">
+        <div>
+          <span className="compare-label">参考译文</span>
+          <p className="reference-text">{reference.referenceText}</p>
+        </div>
+        <div>
+          <span className="compare-label">你的译文</span>
+          <p className="user-text">{reference.userText || '未作答'}</p>
+        </div>
       </div>
     </section>
   );

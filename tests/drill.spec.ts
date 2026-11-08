@@ -29,9 +29,9 @@ test.describe('单项测试 drill', () => {
     await expect(page).toHaveURL(/#\/drill$/);
     await expect(page.getByRole('heading', { level: 1, name: '单项测试' })).toBeVisible();
 
-    // Five objective sections with real counts/points, plus the excluded-sections note.
+    // Six sections with real counts/points, plus the excluded-sections note.
     const cards = page.locator('.drill-card');
-    await expect(cards).toHaveCount(5);
+    await expect(cards).toHaveCount(6);
     const reading = cards.filter({ has: page.getByRole('heading', { name: '阅读理解' }) });
     await expect(reading).toContainText('10 题');
     await expect(reading).toContainText('20 分');
@@ -138,6 +138,98 @@ test.describe('单项测试 drill', () => {
     await page.getByRole('link', { name: '成绩记录' }).click();
     await expect(page).toHaveURL(/#\/history$/);
     await expect(page.locator('.history-card')).toHaveCount(0);
+  });
+
+  test('translation drill only reveals a reference translation, never a verdict or score', async ({
+    page,
+  }) => {
+    await page.goto('/#/drill');
+
+    // The landing card is honest about not being graded: no point value anywhere on it.
+    const translationCard = page
+      .locator('.drill-card')
+      .filter({ has: page.getByRole('heading', { name: '翻译' }) });
+    await expect(translationCard).toContainText('5 题');
+    await expect(translationCard).toContainText('不判分');
+    await expect(translationCard).not.toContainText('15 分');
+    await expect(page.locator('.drill-excluded')).toContainText('翻译已纳入单项测试');
+    await expect(page.locator('.drill-excluded')).toContainText('概要写作');
+
+    await page.getByRole('button', { name: '开始翻译单项测试' }).click();
+    await expect(page.locator('.drill-head h1')).toHaveText('翻译');
+    await expect(page.locator('.drill-head p')).toContainText('第 1 / 5 题');
+    await expect(page.locator('.drill-head p')).toContainText('不判分');
+
+    // 中译英：答案是多行 textarea，且没作答前不能看参考译文。
+    const reveal = page.getByRole('button', { name: '查看参考译文' });
+    await expect(reveal).toBeDisabled();
+    await expect(page.locator('.drill-question textarea')).toHaveCount(1);
+    const area = page.getByLabel('你的译文');
+    await expect(area).toBeVisible();
+
+    const myText = 'This is only my own translation, kept for comparison.';
+    await area.fill(myText);
+    await expect(reveal).toBeEnabled();
+    await reveal.click();
+
+    const card = page.locator('.drill-feedback');
+    await expect(card).toBeVisible();
+    const reference = (await card.locator('.reference-text').innerText()).trim();
+    expect(reference.length).toBeGreaterThan(10);
+    await expect(card.locator('.user-text')).toHaveText(myText);
+    await expect(card).toContainText('本题用时');
+
+    // The absence of grading is the feature: no ✓/✗ badge, no score, no explanation/advice.
+    expect(await card.locator('.drill-badge').count()).toBe(0);
+    expect(await card.locator('.drill-answer').count()).toBe(0);
+    expect(await card.locator('.drill-explain').count()).toBe(0);
+    expect(await card.locator('.drill-advice').count()).toBe(0);
+    await expect(card).not.toContainText('答对了');
+    await expect(card).not.toContainText('答错了');
+    await expect(card).not.toContainText(/\d+\s*分/);
+
+    // Revealed -> locked, exactly like the graded sections.
+    await expect(area).not.toBeEditable();
+    await expect(page.getByRole('button', { name: '已查看参考译文' })).toBeDisabled();
+
+    for (let number = 2; number <= 5; number += 1) {
+      await page.getByRole('button', { name: '下一题' }).click();
+      await expect(page.locator('.drill-head p')).toContainText(`第 ${number} / 5 题`);
+      await page.getByLabel('你的译文').fill(`My own translation number ${number}.`);
+      await page.getByRole('button', { name: '查看参考译文' }).click();
+      await expect(page.locator('.drill-feedback .reference-text')).not.toBeEmpty();
+    }
+    await page.getByRole('button', { name: '完成本节' }).click();
+
+    await expect(page.getByRole('heading', { level: 1, name: '本节小结' })).toBeVisible();
+    const summary = page.locator('.drill-summary');
+    await expect(summary).toContainText('完成 5/5 题');
+    await expect(summary).toContainText('用时');
+    await expect(page.locator('.drill-reference-note')).toContainText('翻译不判分');
+    await expect(summary).not.toContainText('正确率');
+    await expect(summary).not.toContainText('分');
+    expect(await page.locator('.drill-wrong').count()).toBe(0);
+
+    // The record says reference, with no invented scores, and the exam history stays empty.
+    const stored = await page.evaluate(() => ({
+      drill: localStorage.getItem('sh-exam.drill.v1'),
+      attempts: localStorage.getItem('sh-exam.attempts.v1'),
+    }));
+    expect(stored.attempts).toBeNull();
+    const records = JSON.parse(stored.drill ?? '[]') as Record<string, unknown>[];
+    expect(records).toHaveLength(1);
+    expect(records[0].kind).toBe('reference');
+    expect(records[0].section).toBe('translation');
+    expect(Number(records[0].answered)).toBe(5);
+    expect(Number(records[0].earned)).toBe(0);
+    expect(Number(records[0].points)).toBe(0);
+
+    // 最近练习 must not promise a percentage for a reference record.
+    await page.getByRole('button', { name: '换板块' }).click();
+    const recent = page.locator('.drill-recent');
+    await expect(recent).toContainText('翻译');
+    await expect(recent).toContainText('完成 5 题');
+    await expect(recent).not.toContainText('%');
   });
 
   test('keeps the cloze passage mounted and the vocabulary bank shared', async ({ page }) => {

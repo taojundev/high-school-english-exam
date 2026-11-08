@@ -312,7 +312,7 @@ export default function HomePage() {
             <p className="drill-entry-hint">
               想做完一题立刻对答案？
               <Link to="/drill">去「单项测试」</Link>
-              练听力、语法、选词、完形、阅读，逐题判定并给出考点指导。
+              练听力、语法、选词、完形、阅读，逐题判定并给出考点指导；翻译只给参考译文，自己对照。
             </p>
           ) : null}
 
