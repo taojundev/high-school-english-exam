@@ -249,8 +249,12 @@ export interface DrillRecord {
   kind?: DrillRecordKind;
   at: string;
   questions: number;
-  /** How many questions were finished (judged, or revealed in reference mode). */
-  answered: number;
+  /**
+   * How many questions were finished (judged, or revealed in reference mode).
+   * Optional because records saved before 翻译 existed have no such field: read them as
+   * `answered ?? questions` (a graded set only saved once every question was walked).
+   */
+  answered?: number;
   correct: number;
   earned: number;
   points: number;
@@ -287,14 +291,9 @@ export function buildDrillRecord({
   const stamp = at ?? new Date().toISOString();
   const recordId = id ?? `drill-${Date.parse(stamp).toString(36)}-${Math.floor(Math.random() * 1e5).toString(36)}`;
   const answered = questions.filter((q) => verdicts[q.id]);
-  const correct = answered.filter((q) => verdicts[q.id]?.correct).length;
-  const earned = Math.round(answered.reduce((sum, q) => sum + (verdicts[q.id]?.earned ?? 0), 0) * 100) / 100;
-  const points = questions.reduce((sum, q) => sum + q.points, 0);
-  const wrongTags = answered
-    .filter((q) => !verdicts[q.id]?.correct)
-    .flatMap((q) => q.tags);
 
   // 不判分板块不做分数口径（D6）：翻译只记完成题数，绝不造出 0 分/0 正确率这种假数据。
+  // 参考模式不看 verdicts，所以判分口径的计算全部留在下面的 graded 分支里。
   if (isReferenceSection(section)) {
     return {
       id: recordId,
@@ -310,6 +309,13 @@ export function buildDrillRecord({
       wrongTags: [],
     };
   }
+
+  const correct = answered.filter((q) => verdicts[q.id]?.correct).length;
+  const earned = Math.round(answered.reduce((sum, q) => sum + (verdicts[q.id]?.earned ?? 0), 0) * 100) / 100;
+  const points = questions.reduce((sum, q) => sum + q.points, 0);
+  const wrongTags = answered
+    .filter((q) => !verdicts[q.id]?.correct)
+    .flatMap((q) => q.tags);
 
   return {
     id: recordId,

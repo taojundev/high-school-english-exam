@@ -1,4 +1,43 @@
 import { expect, test } from '@playwright/test';
+import { translation } from '../src/data/translation';
+
+/**
+ * 中文题干关键词 → 该句参考译文里必须出现的英文（大小写/词形按题库原句放宽）。
+ * 每个关键词与英文片段都来自 src/data/translation.ts 的真实条目，不编造。
+ * 覆盖全部 30 条，因为每次练习从题库随机抽 5 句。
+ */
+const TRANSLATION_KEYWORDS: Record<string, RegExp> = {
+  社区服务: /community service/,
+  钥匙: /\bkeys?\b/,
+  中国文化: /chinese culture/i,
+  桥: /\bbridge\b/,
+  运动会: /sports meeting/,
+  大声朗读: /\baloud\b/,
+  妹妹: /\bsister\b/,
+  躺下: /lay down/,
+  塑料污染: /plastic pollution/,
+  梦想: /\bdream\b/,
+  上海博物馆: /shanghai museum/i,
+  会议: /\bmeeting\b/,
+  提问: /questions?/,
+  英语口语: /spoken english/i,
+  公园: /parks?\b/,
+  地铁: /\bsubway\b/,
+  户外: /outdoors?\b/,
+  自行车: /\bbicycle\b/,
+  增加: /\bincreased\b/,
+  周五: /friday/i,
+  成长: /\bgrowth\b/,
+  回信: /hearing from you/,
+  讨论: /\bdiscussing\b/,
+  按时: /on time/,
+  教室: /\bclassroom\b/,
+  公交车: /\bbus\b/,
+  嘲笑: /laughing at/,
+  便利: /\bconvenient\b/,
+  法语: /french/i,
+  糖: /\bsugar\b/,
+};
 
 /**
  * A mock-exam draft that must survive every drill interaction byte for byte. There is only one
@@ -176,6 +215,10 @@ test.describe('单项测试 drill', () => {
     await expect(card).toBeVisible();
     const reference = (await card.locator('.reference-text').innerText()).trim();
     expect(reference.length).toBeGreaterThan(10);
+    // 每揭示一题就记下「题干 + 实际显示的译文」，供后面证明译文确实属于当前这一题。
+    const revealed: { stem: string; reference: string }[] = [
+      { stem: (await page.locator('.translation-prompt').innerText()).trim(), reference },
+    ];
     await expect(card.locator('.user-text')).toHaveText(myText);
     await expect(card).toContainText('本题用时');
 
@@ -197,8 +240,35 @@ test.describe('单项测试 drill', () => {
       await expect(page.locator('.drill-head p')).toContainText(`第 ${number} / 5 题`);
       await page.getByLabel('你的译文').fill(`My own translation number ${number}.`);
       await page.getByRole('button', { name: '查看参考译文' }).click();
-      await expect(page.locator('.drill-feedback .reference-text')).not.toBeEmpty();
+      const text = (await page.locator('.drill-feedback .reference-text').innerText()).trim();
+      expect(text.length).toBeGreaterThan(10);
+      revealed.push({
+        stem: (await page.locator('.translation-prompt').innerText()).trim(),
+        reference: text,
+      });
     }
+
+    // 五条译文必须两两不同：一旦 ReferenceCard 的入参被固定成 paper.questions[0]，这里就红。
+    expect(revealed).toHaveLength(5);
+    expect(new Set(revealed.map((item) => item.reference)).size).toBe(5);
+
+    // 而且每条译文必须是「当前这句题干」在题库里对应的那一句，不是同组里别句的译文。
+    for (const { stem, reference: shown } of revealed) {
+      const item = translation.find((entry) => entry.chinese === stem);
+      expect(item, `题干不在翻译题库中：${stem}`).toBeDefined();
+      expect(shown, `题干「${stem}」显示了别的题的译文`).toBe(item!.reference);
+    }
+
+    // 中文题干 → 英文译文的关键词对应（关键词取自题库真实数据）。至少两组必须命中。
+    let keywordChecks = 0;
+    for (const { stem, reference: shown } of revealed) {
+      for (const [chinese, english] of Object.entries(TRANSLATION_KEYWORDS)) {
+        if (!stem.includes(chinese)) continue;
+        expect(shown, `题干含「${chinese}」，译文应含 ${english}`).toMatch(english);
+        keywordChecks += 1;
+      }
+    }
+    expect(keywordChecks).toBeGreaterThanOrEqual(2);
     await page.getByRole('button', { name: '完成本节' }).click();
 
     await expect(page.getByRole('heading', { level: 1, name: '本节小结' })).toBeVisible();
@@ -230,6 +300,37 @@ test.describe('单项测试 drill', () => {
     await expect(recent).toContainText('翻译');
     await expect(recent).toContainText('完成 5 题');
     await expect(recent).not.toContainText('%');
+  });
+
+  test('renders a legacy drill record with no kind as a graded score in 最近练习', async ({ page }) => {
+    // 旧记录：没有 kind，也没有 answered。它必须在「最近练习」里按判分口径渲染。
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        'sh-exam.drill.v1',
+        JSON.stringify([
+          {
+            id: 'legacy-drill-1',
+            section: 'grammar',
+            at: '2026-01-01T08:00:00.000Z',
+            questions: 10,
+            correct: 8,
+            earned: 16,
+            points: 20,
+            elapsedSec: 90,
+            wrongTags: ['语法-时态'],
+          },
+        ]),
+      );
+    });
+    await page.goto('/#/drill');
+
+    const row = page.locator('.drill-recent-row').filter({ hasText: '语法与词汇' });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText('8/10');
+    await expect(row).toContainText('80%');
+    // 掉进参考模式分支就会变成「完成 10 题 · 不判分」，这两个断言一起拦住它。
+    await expect(row).not.toContainText('不判分');
+    await expect(row).not.toContainText('完成');
   });
 
   test('keeps the cloze passage mounted and the vocabulary bank shared', async ({ page }) => {

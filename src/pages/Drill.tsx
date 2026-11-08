@@ -279,7 +279,7 @@ export default function DrillPage() {
 
         {saveFailed ? (
           <div className="storage-warning" role="alert">
-            练习记录保存失败：浏览器存储已满或不可用。本次成绩仍显示在下方，但不会出现在「最近练习」。
+            练习记录保存失败：浏览器存储已满或不可用。本次{reference ? '练习' : '成绩'}仍显示在下方，但不会出现在「最近练习」。
           </div>
         ) : null}
 
@@ -288,7 +288,7 @@ export default function DrillPage() {
             <div className="drill-summary-stat">
               <span>完成进度</span>
               <strong>
-                完成 {record.answered}/{record.questions} 题
+                完成 {record.answered ?? record.questions}/{record.questions} 题
               </strong>
               <small>每题看过参考译文就算完成</small>
             </div>
