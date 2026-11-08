@@ -8,7 +8,7 @@ import type {
   TagStat,
 } from '../types';
 
-interface AdviceEntry {
+export interface AdviceEntry {
   title: string;
   detail: string;
   action: string;
@@ -254,6 +254,47 @@ const SECTION_ADVICE: Record<SectionId, AdviceEntry> = {
     action: '每周写 1 篇并对照范文修改，重点检查要点、连接词和词数。',
   },
 };
+
+/** Tag prefixes are written as "板块-考点", so a tag can still find a section-level fallback. */
+const TAG_PREFIX_SECTION: Record<string, SectionId> = {
+  听力: 'listening',
+  语法: 'grammar',
+  词汇: 'vocabulary',
+  完形: 'cloze',
+  阅读: 'reading',
+  翻译: 'translation',
+  概要: 'summary',
+  写作: 'writing',
+};
+
+const GENERIC_ADVICE: AdviceEntry = {
+  title: '把这道题当成一次定位练习',
+  detail:
+    '这个考点暂时没有单独的指导条目。先回到题干/原文找出判断依据，再对照解析确认自己是“读懂后选对”还是“排除后猜对”。',
+  action: '把本题解析压缩成一句错因笔记（词义、搭配、逻辑还是定位），隔天重做同考点 3 题。',
+};
+
+/** True when the tag has its own hand-written entry in the advice table. */
+export function hasTagAdvice(tag: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TAG_ADVICE, tag);
+}
+
+/** Section-level guidance; always non-empty. */
+export function sectionAdvice(section: SectionId): AdviceEntry {
+  return SECTION_ADVICE[section] ?? GENERIC_ADVICE;
+}
+
+/**
+ * Guidance for one exam tag. Never returns undefined: a tag without its own entry falls back to
+ * the section advice (taken from the argument, else guessed from the "板块-考点" prefix), then to
+ * a generic entry. The 240-line table itself is not copied or rewritten.
+ */
+export function adviceForTag(tag: string, section?: SectionId): AdviceEntry {
+  const direct = TAG_ADVICE[tag];
+  if (direct) return direct;
+  const guessed = section ?? TAG_PREFIX_SECTION[tag.split('-')[0] ?? ''];
+  return guessed ? SECTION_ADVICE[guessed] ?? GENERIC_ADVICE : GENERIC_ADVICE;
+}
 
 const priorityRank: Record<SuggestionPriority, number> = { high: 0, medium: 1, low: 2 };
 

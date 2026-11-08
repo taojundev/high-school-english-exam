@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { HashRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { Footer, Header } from './components/Layout';
 import BankPage from './pages/Bank';
+import DrillPage from './pages/Drill';
 import ExamPage from './pages/Exam';
 import HistoryPage from './pages/History';
 import HomePage from './pages/Home';
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/result/:attemptId" element={<ResultPage />} />
           <Route path="/review/:attemptId" element={<ReviewPage />} />
           <Route path="/bank" element={<BankPage />} />
+          <Route path="/drill" element={<DrillPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>

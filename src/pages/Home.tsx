@@ -308,6 +308,14 @@ export default function HomePage() {
             </div>
           )}
 
+          {mode === 'section' ? (
+            <p className="drill-entry-hint">
+              想做完一题立刻对答案？
+              <Link to="/drill">去「单项测试」</Link>
+              练听力、语法、选词、完形、阅读，逐题判定并给出考点指导。
+            </p>
+          ) : null}
+
           <div className="start-footer">
             <div className="start-options">
               <div className="difficulty-picker">

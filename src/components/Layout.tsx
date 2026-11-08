@@ -5,6 +5,7 @@ import { Menu } from './Icons';
 const links = [
   { to: '/', label: '首页' },
   { to: '/bank', label: '题库' },
+  { to: '/drill', label: '单项测试' },
   { to: '/history', label: '成绩记录' },
 ];
 
